@@ -68,6 +68,7 @@ def can_stream_pcm(config: StackchanConfig) -> bool:
             or (config.tts_engine == "elevenlabs" and bool(
                 (config.elevenlabs_api_key and config.elevenlabs_voice_id) or config.fish_audio_key
             ))
+            or (config.tts_engine == "minimax" and bool(config.minimax_api_key and config.minimax_voice_id))
         )
     )
 
@@ -153,6 +154,7 @@ def build_health_report(client: Any, config: StackchanConfig) -> dict[str, objec
             "ffmpeg": bool(shutil.which("ffmpeg")),
             "edge_tts": bool(shutil.which(config.edge_tts_bin)),
             "fish_audio_key": bool(config.fish_audio_key),
+            "minimax_api_key": bool(config.minimax_api_key),
         },
         "audio_dir": check_audio_dir(),
         "device": device,
@@ -186,6 +188,8 @@ def post_preferred_pcm_stream(
     synthesis_started = time.perf_counter()
     if engine == "elevenlabs":
         prepared_pcm, engine = audio_processing.prepare_elevenlabs_pcm(text, lang, config)
+    elif engine == "minimax":
+        prepared_pcm = audio_processing.synthesize_minimax_pcm(text, config)
     synthesis_ms = timing_ms(synthesis_started)
 
     def pcm_chunks():
@@ -281,7 +285,7 @@ def register_tools(mcp, client: Any, config: StackchanConfig, image_cls):
                             confirmation += " (Fish fallback)"
                         return confirmation
                     pcm_fallback_reason = f"PCM play returned {result}"
-                    if config.audio_mode == "pcm" or config.transport == "relay" or config.tts_engine == "elevenlabs":
+                    if config.audio_mode == "pcm" or config.transport == "relay" or config.tts_engine in {"elevenlabs", "minimax"}:
                         return f"❌ PCM play failed: {result}"
                     logger.warning("Falling back to WAV TTS: %s", pcm_fallback_reason)
                 except PcmPlaybackError as exc:
@@ -289,13 +293,13 @@ def register_tools(mcp, client: Any, config: StackchanConfig, image_cls):
                         logger.error("PCM playback failed after audio started: %s", exc)
                         return f"❌ PCM playback failed after audio started: {exc}"
                     pcm_fallback_reason = str(exc)
-                    if config.audio_mode == "pcm" or config.transport == "relay" or config.tts_engine == "elevenlabs":
+                    if config.audio_mode == "pcm" or config.transport == "relay" or config.tts_engine in {"elevenlabs", "minimax"}:
                         logger.error("PCM playback failed in forced PCM mode: %s", exc)
                         return f"❌ PCM playback failed: {exc}"
                     logger.warning("Falling back to WAV TTS after PCM failure: %s", exc)
                 except Exception as exc:
                     pcm_fallback_reason = str(exc)
-                    if config.audio_mode == "pcm" or config.transport == "relay" or config.tts_engine == "elevenlabs":
+                    if config.audio_mode == "pcm" or config.transport == "relay" or config.tts_engine in {"elevenlabs", "minimax"}:
                         logger.error("PCM playback failed in forced PCM mode: %s", exc)
                         return f"❌ PCM playback failed: {exc}"
                     logger.warning("Falling back to WAV TTS after PCM failure: %s", exc)
@@ -313,12 +317,12 @@ def register_tools(mcp, client: Any, config: StackchanConfig, image_cls):
                     },
                 )
             elif config.audio_mode == "pcm" and config.transport != "relay":
-                return "❌ PCM playback unavailable: configure fish-audio or elevenlabs TTS credentials"
+                return "❌ PCM playback unavailable: configure fish-audio, elevenlabs or minimax TTS credentials"
 
             wav_timing = {}
             tts_details: dict[str, str] = {}
             t0 = time.perf_counter()
-            if config.tts_engine == "elevenlabs":
+            if config.tts_engine in {"elevenlabs", "minimax"}:
                 wav_path = audio_processing.generate_tts(text, lang, config, details=tts_details)
             else:
                 wav_path = audio_processing.generate_tts(text, lang, config)

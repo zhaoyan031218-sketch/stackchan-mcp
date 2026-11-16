@@ -10,7 +10,7 @@ from mcp_server import stackchan_config
 @pytest.fixture(autouse=True)
 def isolated_config_env(monkeypatch):
     for name in os.environ:
-        if name.startswith(("STACKCHAN_", "FISH_AUDIO_", "ELEVENLABS_")) or name in {
+        if name.startswith(("STACKCHAN_", "FISH_AUDIO_", "ELEVENLABS_", "MINIMAX_")) or name in {
             "MAC_IP", "TTS_ENGINE", "AUDIO_SERVE_PORT", "EDGE_TTS_BIN"
         }:
             monkeypatch.delenv(name)
@@ -40,7 +40,7 @@ def test_existing_dataclass_constructors_need_no_elevenlabs_fields(positional):
     previous_fields = {
         item.name: getattr(loaded, item.name)
         for item in fields(loaded)
-        if not item.name.startswith("elevenlabs_")
+        if not item.name.startswith(("elevenlabs_", "minimax_"))
     }
 
     if positional:

@@ -152,6 +152,11 @@ class StackchanConfig:
     elevenlabs_stability: float = 0.70
     elevenlabs_similarity: float = 0.75
     elevenlabs_tts_timeout: float = 30.0
+    minimax_api_key: str = field(default="", repr=False)
+    minimax_voice_id: str = field(default="", repr=False)
+    minimax_model_id: str = "speech-2.8-hd"
+    minimax_api_host: str = "https://api.minimaxi.com"
+    minimax_tts_timeout: float = 30.0
 
 
 VALID_AUDIO_MODES = {"auto", "pcm", "wav"}
@@ -231,6 +236,10 @@ def config_summary(config: StackchanConfig) -> dict[str, Any]:
             "elevenlabs_model_id": config.elevenlabs_model_id,
             "elevenlabs_stability": config.elevenlabs_stability,
             "elevenlabs_similarity": config.elevenlabs_similarity,
+            "minimax_api_key_configured": bool(config.minimax_api_key),
+            "minimax_voice_id_configured": bool(config.minimax_voice_id),
+            "minimax_model_id": config.minimax_model_id,
+            "minimax_api_host": config.minimax_api_host,
         },
         "mcp_auth_token_configured": bool(config.mcp_auth_token),
         "timeouts": {
@@ -247,6 +256,7 @@ def config_summary(config: StackchanConfig) -> dict[str, Any]:
             "fish_tts": config.fish_tts_timeout,
             "fish_asr": config.fish_asr_timeout,
             "elevenlabs_tts": config.elevenlabs_tts_timeout,
+            "minimax_tts": config.minimax_tts_timeout,
         },
     }
 
@@ -415,6 +425,11 @@ def load_config() -> StackchanConfig:
         elevenlabs_stability=env_unit_float("ELEVENLABS_STABILITY", 0.70),
         elevenlabs_similarity=env_unit_float("ELEVENLABS_SIMILARITY", 0.75),
         elevenlabs_tts_timeout=env_positive_float("STACKCHAN_ELEVENLABS_TTS_TIMEOUT", 30.0),
+        minimax_api_key=os.environ.get("MINIMAX_API_KEY", "").strip(),
+        minimax_voice_id=os.environ.get("MINIMAX_VOICE_ID", "").strip(),
+        minimax_model_id=os.environ.get("MINIMAX_MODEL_ID", "speech-2.8-hd").strip(),
+        minimax_api_host=os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com").strip().rstrip("/"),
+        minimax_tts_timeout=env_positive_float("STACKCHAN_MINIMAX_TTS_TIMEOUT", 30.0),
         mcp_auth_token=os.environ.get("STACKCHAN_MCP_AUTH_TOKEN", ""),
         audio_publish_target=os.environ.get("STACKCHAN_AUDIO_PUBLISH_TARGET", ""),
         audio_publish_timeout=env_float_any(

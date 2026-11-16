@@ -59,6 +59,14 @@ Or copy `.env.example` to `.env` and edit there — `.env` is gitignored.
 
 #### TTS configuration
 
+MiniMax custom voices are supported with `TTS_ENGINE=minimax`, `MINIMAX_API_KEY`
+and `MINIMAX_VOICE_ID`. Mainland China accounts use the default
+`MINIMAX_API_HOST=https://api.minimaxi.com`; international accounts must use
+`https://api.minimax.io`. The default model is `speech-2.8-hd` and can be changed
+with `MINIMAX_MODEL_ID`. See [MiniMax voice setup](docs/minimax-voice.md) for
+Railway configuration and a first playback check. This changes speech synthesis;
+microphone transcription still needs its own ASR configuration.
+
 `TTS_ENGINE` defaults to `fish-audio`; `edge-tts` is also supported. To opt in to
 ElevenLabs TTS, set `TTS_ENGINE=elevenlabs`, `ELEVENLABS_API_KEY`, and
 `ELEVENLABS_VOICE_ID`. Keep the existing Fish credentials and voice models

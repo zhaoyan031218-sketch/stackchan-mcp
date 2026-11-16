@@ -12,6 +12,7 @@ import requests
 
 from .audio_server import AUDIO_DIR, TEMP_AUDIO_DIR
 from .elevenlabs_tts import TtsSynthesisError, collect_pcm, synthesize_pcm
+from .minimax_tts import synthesize_pcm as synthesize_minimax_pcm
 from .stackchan_config import (
     EDGE_VOICES,
     PCM_CHANNELS,
@@ -184,8 +185,11 @@ def tts_fish(text: str, lang: str, config: StackchanConfig) -> Path:
 def generate_tts(
     text: str, lang: str, config: StackchanConfig, *, details: dict[str, str] | None = None
 ) -> Path:
-    if config.tts_engine == "elevenlabs":
-        pcm, engine = prepare_elevenlabs_pcm(text, lang, config)
+    if config.tts_engine in {"elevenlabs", "minimax"}:
+        if config.tts_engine == "minimax":
+            pcm, engine = synthesize_minimax_pcm(text, config), "minimax"
+        else:
+            pcm, engine = prepare_elevenlabs_pcm(text, lang, config)
         if details is not None:
             details["engine"] = engine
         stem = new_tts_stem()

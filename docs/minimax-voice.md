@@ -1,0 +1,64 @@
+# MiniMax 自定义音色
+
+此适配让 `stackchan_say` 使用 MiniMax 同步语音合成，再沿现有 PCM 通道播放。
+机器人固件不需要更新。自定义音色必须能通过 MiniMax 开放平台 API 使用；
+`voice_id` 是 API 音色标识，不是页面上的音色显示名称。密钥与音色需要属于
+有使用权限的同一区域账户，且该账户有可用的语音 API 额度。
+
+## Railway 设置
+
+保留已经生效的 MCP/设备令牌和 relay 设置，添加或修改：
+
+| 变量 | 值 |
+| --- | --- |
+| `TTS_ENGINE` | `minimax` |
+| `MINIMAX_API_KEY` | 在 Railway Variables 中安全填写开放平台 API Key |
+| `MINIMAX_VOICE_ID` | 在 Railway Variables 中填写自己的音色 ID |
+| `MINIMAX_API_HOST` | 国内：`https://api.minimaxi.com`（默认）；国际：`https://api.minimax.io` |
+| `MINIMAX_MODEL_ID` | `speech-2.8-hd`（默认，可指定账户支持的其他语音模型） |
+| `STACKCHAN_MINIMAX_TTS_TIMEOUT` | `30.0`（默认，秒） |
+
+MiniMax 模式不要求配置 Fish 或 ElevenLabs 密钥。不要将真实 API Key 或音色 ID
+提交进 Git。配置摘要仅返回密钥和音色是否已配置，不返回实际值。
+
+代码更新部署成功、变量保存并生效后，在 Kelivo 请求：
+
+> 调用 stackchan_say，说“你好，我已经连接上啦”，lang 设置为 zh。
+
+先用一句短话确认音色和音量。若 MCP 显示成功，代表设备接受了播放请求；
+实际有没有发声仍需现场确认。MiniMax API 错误会显示 HTTP 状态或数字错误码，
+不回显供应商响应正文、语音文本或密钥。
+
+## 行为与边界
+
+- 请求官方 `/v1/t2a_v2`，指定 `stream=false`、自定义 `voice_id`、
+  24 kHz 单声道 PCM；将 JSON 中十六进制音频解码为 16-bit PCM。
+- 完整合成、检查响应与音频长度后才开始传给机器人。不会边收到供应商数据
+  边播放，也不会把失败或不完整响应交给机器人。
+- 复用现有音频大小上限（默认 2 MiB，约 43 秒 PCM）。响应 JSON 同样有上限；
+  太长的语音会报错，建议拆成短句。该限制不意味着供应商不会对失败或超限的
+  合成请求计费。
+- 合成失败不自动重试，不自动切换其他声音。设备播放失败也不会重新调用
+  MiniMax。TCP 转 staged 的传输回退复用同一份已合成音频。
+- 仅允许国内/国际两个官方 HTTPS API host；不跟随重定向，保留 TLS 校验。
+- 超时包含网络连接/读取超时及各响应块之间的总耗时检查，并非严格的线程
+  墙钟终止定时器。
+- 本次仅加入 TTS。`stackchan_listen` 的 ASR 和后台唤醒/前端投递保持原有配置；
+  仅填写 MiniMax TTS 密钥不会自动开启双向免手动语音对话。
+
+## 开发验证
+
+```sh
+uv run --locked pytest tests/test_minimax_tts.py tests/test_elevenlabs_tts.py tests/test_stackchan_config.py
+uv run --locked ruff check .
+uv run --locked pyright
+```
+
+测试模拟供应商响应，不访问付费 API，也不操作实机。覆盖请求参数、PCM/WAV
+及 relay 播放路径、超限/格式错误、密钥保护、超时、错误响应、无重复合成和
+现有 ElevenLabs 行为回归。真实音色权限和实际播放需要部署后现场验证。
+
+接口与区域依据：MiniMax 官方
+[MCP 文档](https://github.com/MiniMax-AI/MiniMax-MCP/blob/2904f3333474cc020676b6c91676656bc4d03b3b/README.md)、
+[TTS 请求实现](https://github.com/MiniMax-AI/MiniMax-MCP/blob/2904f3333474cc020676b6c91676656bc4d03b3b/minimax_mcp/server.py)
+及该版本默认模型配置。未复制其应用代码，也未新增依赖包。
