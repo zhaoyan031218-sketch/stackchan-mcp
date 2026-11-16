@@ -117,6 +117,11 @@ Add this block to your MCP client config (Claude Desktop, Cursor, etc.):
 
 Full per-client copy-paste configs: [docs/mcp-client-setup.md](docs/mcp-client-setup.md)
 
+For a cloud-hosted MCP server with an outbound robot connection, see the
+[Railway deployment guide](docs/railway-deployment.md). The included Dockerfile
+and `railway.json` run MCP and its private relay together; provision the robot
+after the cloud service is healthy.
+
 ### 5. Talk to it
 
 In any connected MCP client, try:

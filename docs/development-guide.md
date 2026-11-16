@@ -14,6 +14,9 @@ push-based Stack-chan voice avatar in this repository.
 - `faces/`: source or companion face assets.
 - `mcp_server/server.py`: Python MCP server that exposes Stack-chan tools and
   talks to the device over HTTP.
+- `mcp_server/railway.py`: single-replica cloud entrypoint exposing authenticated
+  MCP and device WebSockets, with relay control APIs on loopback only. See
+  [Railway deployment](railway-deployment.md) for container setup and validation.
 - `start-http.sh`: helper script that starts the MCP server in Streamable HTTP
   mode and launches the public Cloudflare tunnel.
 

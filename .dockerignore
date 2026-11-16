@@ -1,0 +1,11 @@
+# Allowlist prevents local credentials, firmware configs and generated audio
+# from ever entering the build context.
+*
+!Dockerfile
+!.dockerignore
+!pyproject.toml
+!uv.lock
+!README.md
+!LICENSE
+!mcp_server/
+!mcp_server/*.py
