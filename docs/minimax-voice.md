@@ -32,16 +32,19 @@ MiniMax 模式不要求配置 Fish 或 ElevenLabs 密钥。不要将真实 API K
 ## 行为与边界
 
 - 请求官方 `/v1/t2a_v2`，指定 `stream=false`、自定义 `voice_id`、
-  24 kHz 单声道 PCM；将 JSON 中十六进制音频解码为 16-bit PCM。
-- 完整合成、检查响应与音频长度后才开始传给机器人。不会边收到供应商数据
-  边播放，也不会把失败或不完整响应交给机器人。
+  24 kHz 单声道 MP3（128 kbps）。先解开 JSON 中的十六进制编码，再由
+  ffmpeg 明确解码为 24 kHz、单声道、signed 16-bit little-endian PCM。
+  不直接将供应商的压缩音频或未知位深的原始字节当作扬声器采样播放。
+- 运行环境需要 ffmpeg（Railway 镜像已包含）；缺失时在调用付费 API 前报错。
+  完整合成、解码、检查音频长度后才开始传给机器人；解码失败不会开始播放。
 - 复用现有音频大小上限（默认 2 MiB，约 43 秒 PCM）。响应 JSON 同样有上限；
   太长的语音会报错，建议拆成短句。该限制不意味着供应商不会对失败或超限的
   合成请求计费。
 - 合成失败不自动重试，不自动切换其他声音。设备播放失败也不会重新调用
   MiniMax。TCP 转 staged 的传输回退复用同一份已合成音频。
 - 仅允许国内/国际两个官方 HTTPS API host；不跟随重定向，保留 TLS 校验。
-- 超时包含网络连接/读取超时及各响应块之间的总耗时检查，并非严格的线程
+- 解码进程受剩余总时限与输出时长限制，超过 PCM 大小上限会报错而非截断播放。
+  网络阶段有连接/读取超时及响应块之间的总耗时检查，并非严格的线程
   墙钟终止定时器。
 - 本次仅加入 TTS。`stackchan_listen` 的 ASR 和后台唤醒/前端投递保持原有配置；
   仅填写 MiniMax TTS 密钥不会自动开启双向免手动语音对话。
@@ -49,16 +52,18 @@ MiniMax 模式不要求配置 Fish 或 ElevenLabs 密钥。不要将真实 API K
 ## 开发验证
 
 ```sh
-uv run --locked pytest tests/test_minimax_tts.py tests/test_elevenlabs_tts.py tests/test_stackchan_config.py
+uv run --locked pytest tests/test_minimax_tts.py tests/test_minimax_audio_decode.py tests/test_elevenlabs_tts.py tests/test_stackchan_config.py
 uv run --locked ruff check .
 uv run --locked pyright
 ```
 
-测试模拟供应商响应，不访问付费 API，也不操作实机。覆盖请求参数、PCM/WAV
+测试模拟供应商响应，不访问付费 API，也不操作实机。真实编解码回归测试需要
+ffmpeg：将已知 440 Hz 测试音编码成 MP3，再经过实际播放准备路径检查 PCM
+频率、幅度与时长，包括 44.1 kHz 立体声输入的重采样和混音。还覆盖请求参数、PCM/WAV
 及 relay 播放路径、超限/格式错误、密钥保护、超时、错误响应、无重复合成和
 现有 ElevenLabs 行为回归。真实音色权限和实际播放需要部署后现场验证。
 
 接口与区域依据：MiniMax 官方
 [MCP 文档](https://github.com/MiniMax-AI/MiniMax-MCP/blob/2904f3333474cc020676b6c91676656bc4d03b3b/README.md)、
 [TTS 请求实现](https://github.com/MiniMax-AI/MiniMax-MCP/blob/2904f3333474cc020676b6c91676656bc4d03b3b/minimax_mcp/server.py)
-及该版本默认模型配置。未复制其应用代码，也未新增依赖包。
+及该版本默认模型配置。未复制其应用代码，也未新增 Python 依赖包。

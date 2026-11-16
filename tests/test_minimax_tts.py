@@ -1,5 +1,4 @@
 import json
-import time
 import wave
 from types import SimpleNamespace
 from unittest.mock import Mock
@@ -13,6 +12,7 @@ from mcp_server.elevenlabs_tts import TtsSynthesisError
 from mcp_server.stackchan_client import PcmPlaybackError
 
 PCM = b"\x01\x00\x02\x00" * 100
+ENCODED = b"ID3-test-fixture-not-real-audio"
 
 
 def config(**changes):
@@ -20,9 +20,9 @@ def config(**changes):
                           "minimax_voice_id": "private-test-voice", **changes})
 
 
-def payload(pcm=PCM):
-    return {"base_resp": {"status_code": 0}, "data": {"audio": pcm.hex(), "status": 2},
-            "extra_info": {"audio_sample_rate": 24000, "audio_channel": 1, "audio_format": "pcm"}}
+def payload(encoded=ENCODED):
+    return {"base_resp": {"status_code": 0}, "data": {"audio": encoded.hex(), "status": 2},
+            "extra_info": {"audio_sample_rate": 24000, "audio_channel": 1, "audio_format": "mp3"}}
 
 
 class Response:
@@ -53,6 +53,10 @@ def offline(monkeypatch, tmp_path):
     monkeypatch.setattr(requests, "post", Mock(side_effect=AssertionError("unexpected network")))
     monkeypatch.setattr(mcp_tools, "start_audio_server", lambda *_args: None)
     monkeypatch.setattr(mcp_tools, "signal_face_tracking", lambda *_args, **_kwargs: None)
+    # Isolate HTTP/transport contract tests. Actual codec tests are in
+    # test_minimax_audio_decode.py and never replace the decoder.
+    monkeypatch.setattr(minimax_tts, "decode_mp3", Mock(return_value=PCM))
+    monkeypatch.setattr(minimax_tts.shutil, "which", lambda _name: "/test/ffmpeg")
 
 
 @pytest.mark.parametrize("host", ["https://api.minimaxi.com", "https://api.minimax.io"])
@@ -68,7 +72,7 @@ def test_request_contract_custom_voice_and_decoded_pcm(monkeypatch, host):
     assert kwargs["json"] == {
         "model": "speech-2.8-hd", "text": "hello", "stream": False,
         "voice_setting": {"voice_id": "private-test-voice", "speed": 1.0, "vol": 1.0, "pitch": 0},
-        "audio_setting": {"sample_rate": 24000, "format": "pcm", "channel": 1},
+        "audio_setting": {"sample_rate": 24000, "format": "mp3", "bitrate": 128000, "channel": 1},
         "language_boost": "auto",
     }
     assert kwargs["stream"] is True
@@ -101,13 +105,11 @@ def test_http_errors_and_redirects_are_not_followed(monkeypatch, status):
     [], {}, {"base_resp": {"status_code": False}},
     {"base_resp": {"status_code": 0}, "data": None},
     {"base_resp": {"status_code": 0}, "data": {"audio": PCM.hex(), "status": 1}},
-    payload(b""), payload(b"\x01"),
+    payload(b""),
+    {"base_resp": {"status_code": 0}, "data": {"audio": "0"}},
     {"base_resp": {"status_code": 0}, "data": {"audio": "https://example.com/audio"}},
     {"base_resp": {"status_code": 0}, "data": {"audio": "0000 bad"}},
-    {**payload(), "extra_info": {"audio_sample_rate": 32000}},
-    {**payload(), "extra_info": {"audio_channel": 2}},
-    {**payload(), "extra_info": {"audio_channel": True}},
-    {**payload(), "extra_info": {"audio_format": "mp3"}},
+    {**payload(), "extra_info": {"audio_format": "pcm"}},
     {**payload(), "extra_info": None},
 ])
 def test_bad_audio_never_reaches_playback(monkeypatch, data):
@@ -163,11 +165,6 @@ def test_synthesis_deadline(monkeypatch):
     monkeypatch.setattr(minimax_tts.time, "monotonic", Mock(side_effect=[0, 31]))
     with pytest.raises(TtsSynthesisError, match="deadline"):
         minimax_tts.synthesize_pcm("hello", config())
-
-
-def test_final_validation_checks_deadline():
-    with pytest.raises(TtsSynthesisError, match="deadline"):
-        minimax_tts.decode_response(payload(), config(), time.monotonic() - 1)
 
 
 @pytest.mark.parametrize("mode", ["pcm", "wav"])

@@ -20,7 +20,8 @@ push-based Stack-chan voice avatar in this repository.
 - `scripts/configure_robot.py`: Windows provisioning helper that verifies the
   server TLS chain and creates a private firmware config without overwriting
   existing settings. See [Windows robot setup](windows-robot-setup.md).
-- `mcp_server/minimax_tts.py`: custom-voice MiniMax synthesis to validated PCM;
+- `mcp_server/minimax_tts.py`: custom-voice MiniMax synthesis requesting MP3,
+  then decoding with ffmpeg to bounded 24 kHz mono s16le PCM before playback;
   [MiniMax voice setup](minimax-voice.md) documents regional credentials and
   playback limits. It does not change ASR or firmware.
 - `start-http.sh`: helper script that starts the MCP server in Streamable HTTP

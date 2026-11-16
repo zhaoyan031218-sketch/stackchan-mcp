@@ -43,7 +43,8 @@ Dockerfile 默认设置 `STACKCHAN_TRANSPORT=relay`、`STACKCHAN_AUDIO_MODE=pcm`
 如需 ElevenLabs，按主 README 设置 `TTS_ENGINE=elevenlabs` 和相关变量。
 如需 MiniMax 自定义音色，参照 [MiniMax 语音配置](minimax-voice.md) 设置
 `TTS_ENGINE=minimax`、`MINIMAX_API_KEY`、`MINIMAX_VOICE_ID`；国内平台地址默认已配置。
-镜像包含 ffmpeg，支持 WAV 到 PCM 转换；未安装可选的 `edge-tts` 命令和 OpenCV。
+镜像包含 ffmpeg，支持 WAV/MP3 到 PCM 转换（MiniMax 语音也使用它）；
+未安装可选的 `edge-tts` 命令和 OpenCV。
 无人值守唤醒/语音桥也不是这个容器的默认服务，需要另行配置 AI 前端投递。
 
 ## 对外接口与验证

@@ -35,6 +35,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --locked --dev
 
+      - name: Install audio codec for real MP3 regression tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Lint Python
         run: uv run --locked ruff check .
 

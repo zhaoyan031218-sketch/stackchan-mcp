@@ -63,7 +63,9 @@ MiniMax custom voices are supported with `TTS_ENGINE=minimax`, `MINIMAX_API_KEY`
 and `MINIMAX_VOICE_ID`. Mainland China accounts use the default
 `MINIMAX_API_HOST=https://api.minimaxi.com`; international accounts must use
 `https://api.minimax.io`. The default model is `speech-2.8-hd` and can be changed
-with `MINIMAX_MODEL_ID`. See [MiniMax voice setup](docs/minimax-voice.md) for
+with `MINIMAX_MODEL_ID`. MiniMax playback requires ffmpeg (included in the Railway
+image) to decode MP3 to the robot's 24 kHz mono s16le PCM format.
+See [MiniMax voice setup](docs/minimax-voice.md) for
 Railway configuration and a first playback check. This changes speech synthesis;
 microphone transcription still needs its own ASR configuration.
 
