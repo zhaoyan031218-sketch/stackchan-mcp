@@ -72,6 +72,9 @@ curl -i https://YOUR_DOMAIN/relay/status  # 应返回 404
 
 ## 下一步：机器人配置
 
+Windows 用户可以使用[CoreS3 配置与烧录助手](windows-robot-setup.md)，在本机
+输入 Wi-Fi 和设备 token，自动验证并提取站点根 CA。
+
 确认云端正常后，再保存现有固件和私密配置，并设置：
 
 - `STACKCHAN_OUTBOUND_ENABLED=1`

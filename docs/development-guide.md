@@ -17,6 +17,9 @@ push-based Stack-chan voice avatar in this repository.
 - `mcp_server/railway.py`: single-replica cloud entrypoint exposing authenticated
   MCP and device WebSockets, with relay control APIs on loopback only. See
   [Railway deployment](railway-deployment.md) for container setup and validation.
+- `scripts/configure_robot.py`: Windows provisioning helper that verifies the
+  server TLS chain and creates a private firmware config without overwriting
+  existing settings. See [Windows robot setup](windows-robot-setup.md).
 - `start-http.sh`: helper script that starts the MCP server in Streamable HTTP
   mode and launches the public Cloudflare tunnel.
 
