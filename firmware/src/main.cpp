@@ -23,6 +23,12 @@
 void setup() {
     Serial.begin(115200);
     delay(1000);
+    Serial.println("\n[BOOT] Stack-chan recovery-20261117.1");
+#if defined(STACKCHAN_REQUIRE_OUTBOUND_CONFIG)
+    Serial.println("[BOOT] Railway configuration required by this build");
+#elif defined(STACKCHAN_USE_PUBLIC_CONFIG)
+    Serial.println("[BOOT] Public rehearsal build; no private cloud configuration");
+#endif
 
     M5StackChan.begin();
     M5.Display.setBrightness(DISPLAY_BRIGHTNESS);

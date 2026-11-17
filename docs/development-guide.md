@@ -645,3 +645,14 @@ Each troubleshooting record should include:
 
 When a troubleshooting session changes normal development practice, update this
 guide in the relevant section and link to the detailed troubleshooting record.
+
+## Railway recovery builds
+
+For a provisioned cloud device, use `pio run -d firmware -e m5stack-cores3-railway`.
+This environment requires private configuration and rejects disabled or empty
+outbound settings at compile time. `m5stack-cores3-public` remains a credential-free
+compile target, and `m5stack-cores3` retains its existing direct-LAN behavior.
+The default `pio run` selects `m5stack-cores3`; cloud uploads explicitly select
+the Railway target so its stricter requirements do not affect LAN builds.
+`scripts/rebuild_robot.py` provides the isolated Windows configuration/build/upload
+flow. See [clean rebuild instructions](../START-HERE.zh-CN.md).

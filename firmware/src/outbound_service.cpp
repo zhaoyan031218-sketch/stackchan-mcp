@@ -208,6 +208,9 @@ static void outboundNetworkTask(void*) {
     socket.enableHeartbeat(15000, 5000, 2);
     socket.onEvent(onSocketEvent);
     bool timeRequested = false;
+    enum class WaitStage { STARTING, WIFI, CLOCK, SERVER, ONLINE };
+    WaitStage lastStage = WaitStage::STARTING;
+    uint32_t lastStageLogMs = 0;
 
     for (;;) {
         // READY is an acquire/release handoff; no request fields are read while
@@ -231,6 +234,26 @@ static void outboundNetworkTask(void*) {
             // Certificate validity needs a plausible clock. Never bypass TLS
             // verification when time sync or provisioning is unavailable.
             if (time(nullptr) >= 1704067200) socket.loop();
+        }
+
+        // Distinguish startup failures without enabling WebSockets debug output,
+        // which could expose the Authorization header. Repeat waiting states
+        // every 30 seconds so a monitor opened after boot is still useful.
+        const WaitStage stage = !wifiReady ? WaitStage::WIFI
+            : time(nullptr) < 1704067200 ? WaitStage::CLOCK
+            : connected.load() ? WaitStage::ONLINE : WaitStage::SERVER;
+        const uint32_t stageNow = millis();
+        if (stage != lastStage || (stage != WaitStage::ONLINE &&
+                                  stageNow - lastStageLogMs >= 30000)) {
+            if (stage == WaitStage::WIFI) {
+                Serial.println("[OUTBOUND] Waiting for WiFi");
+            } else if (stage == WaitStage::CLOCK) {
+                Serial.println("[OUTBOUND] Waiting for NTP time; TLS has not started");
+            } else if (stage == WaitStage::SERVER) {
+                Serial.println("[OUTBOUND] WSS not connected; check host, network, CA and DEVICE token");
+            }
+            lastStage = stage;
+            lastStageLogMs = stageNow;
         }
 
         state = phase.load();
@@ -273,6 +296,7 @@ void initOutboundService() {
         Serial.println("[OUTBOUND] Disabled (invalid CA certificate)");
         return;
     }
+    Serial.println("[OUTBOUND] Configuration accepted; starting WSS task");
     if (xTaskCreatePinnedToCore(outboundNetworkTask, "outboundWss", 12288,
             nullptr, 1, &networkTask, 0) != pdPASS) {
         networkTask = nullptr;
