@@ -27,7 +27,7 @@ WSS 连接，不需要云端访问家中局域网，也不需要电脑持续在�
 | `STACKCHAN_RELAY_DEVICE_TOKEN` | 必填；机器人连接 `/stackchan/ws` 的专用 token |
 | `STACKCHAN_RELAY_TOKEN` | 必填；同容器内部 MCP → 中继控制 token，不能与前两个相同 |
 | `STACKCHAN_PUBLIC_HOST` | 自定义公网域名，例如 `robot.example.com`；不含协议、端口或路径 |
-| `FISH_AUDIO_KEY` | 语音合成/识别所需；仅部署并验证云服务时可暂不配置 |
+| `FISH_AUDIO_KEY` | 使用 Fish 语音合成或识别时需要；MiniMax 模式不需要 |
 | `FISH_AUDIO_MODEL_ZH` / `FISH_AUDIO_MODEL_EN` | 使用 Fish 时配置需要的语音模型 ID |
 
 三个 token 必须各不相同，至少 24 个非空白 ASCII 字符。建议用密码管理器
@@ -43,6 +43,9 @@ Dockerfile 默认设置 `STACKCHAN_TRANSPORT=relay`、`STACKCHAN_AUDIO_MODE=pcm`
 如需 ElevenLabs，按主 README 设置 `TTS_ENGINE=elevenlabs` 和相关变量。
 如需 MiniMax 自定义音色，参照 [MiniMax 语音配置](minimax-voice.md) 设置
 `TTS_ENGINE=minimax`、`MINIMAX_API_KEY`、`MINIMAX_VOICE_ID`；国内平台地址默认已配置。
+`STACKCHAN_ASR_ENGINE` 默认为 `auto`：MiniMax 发声时，录音识别也复用该 MiniMax
+密钥；其他发声引擎默认仍用 Fish。可以显式设置 `minimax` 或 `fish-audio` 独立选择。
+从旧版升级只需更新云端代码；已经正常工作的 CoreS3 固件无需重新烧录。
 镜像包含 ffmpeg，支持 WAV/MP3 到 PCM 转换（MiniMax 语音也使用它）；
 未安装可选的 `edge-tts` 命令和 OpenCV。
 无人值守唤醒/语音桥也不是这个容器的默认服务，需要另行配置 AI 前端投递。

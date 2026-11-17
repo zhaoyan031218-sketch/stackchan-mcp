@@ -155,6 +155,7 @@ def build_health_report(client: Any, config: StackchanConfig) -> dict[str, objec
             "edge_tts": bool(shutil.which(config.edge_tts_bin)),
             "fish_audio_key": bool(config.fish_audio_key),
             "minimax_api_key": bool(config.minimax_api_key),
+            "asr_configured": audio_processing.asr_configuration_error(config, "zh") is None,
         },
         "audio_dir": check_audio_dir(),
         "device": device,

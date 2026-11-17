@@ -40,7 +40,7 @@ def test_existing_dataclass_constructors_need_no_elevenlabs_fields(positional):
     previous_fields = {
         item.name: getattr(loaded, item.name)
         for item in fields(loaded)
-        if not item.name.startswith(("elevenlabs_", "minimax_"))
+        if not item.name.startswith(("elevenlabs_", "minimax_", "asr_"))
     }
 
     if positional:
@@ -144,3 +144,54 @@ def test_elevenlabs_diagnostics_hide_key_and_voice(monkeypatch, caplog, key_conf
     for diagnostic in (json.dumps(summary), repr(config), caplog.text):
         assert key not in diagnostic
         assert voice not in diagnostic
+
+
+@pytest.mark.parametrize("tts,expected", [
+    ("fish-audio", "fish-audio"), ("elevenlabs", "fish-audio"),
+    ("edge-tts", "fish-audio"), ("minimax", "minimax"),
+])
+def test_auto_asr_follows_minimax_without_changing_tts(monkeypatch, tts, expected):
+    monkeypatch.setenv("TTS_ENGINE", tts)
+
+    config = stackchan_config.load_config()
+
+    assert config.tts_engine == tts
+    assert config.asr_engine == "auto"
+    assert stackchan_config.selected_asr_engine(config) == expected
+    assert config.minimax_asr_timeout == 30.0
+
+
+@pytest.mark.parametrize("tts,asr", [
+    ("minimax", "fish-audio"), ("fish-audio", "minimax"),
+])
+def test_asr_override_is_independent_from_tts(monkeypatch, tts, asr):
+    monkeypatch.setenv("TTS_ENGINE", tts)
+    monkeypatch.setenv("STACKCHAN_ASR_ENGINE", f" {asr.upper()} ")
+
+    config = stackchan_config.load_config()
+
+    assert config.tts_engine == tts
+    assert stackchan_config.selected_asr_engine(config) == asr
+
+
+@pytest.mark.parametrize("value", ["", "invalid", "Fish", "private-invalid-value"])
+def test_invalid_asr_engine_fails_without_echoing_value(monkeypatch, value):
+    monkeypatch.setenv("STACKCHAN_ASR_ENGINE", value)
+
+    with pytest.raises(ValueError, match="STACKCHAN_ASR_ENGINE must be auto, minimax, or fish-audio"):
+        stackchan_config.load_config()
+
+
+@pytest.mark.parametrize("value", ["0.001", "1", "120.5", " 3e1 "])
+def test_minimax_asr_timeout_accepts_positive_finite_values(monkeypatch, value):
+    monkeypatch.setenv("STACKCHAN_MINIMAX_ASR_TIMEOUT", value)
+
+    assert stackchan_config.load_config().minimax_asr_timeout == float(value)
+
+
+@pytest.mark.parametrize("value", ["", "invalid", "nan", "inf", "-inf", "1e999", "0", "-1"])
+def test_invalid_minimax_asr_timeout_uses_default(monkeypatch, caplog, value):
+    monkeypatch.setenv("STACKCHAN_MINIMAX_ASR_TIMEOUT", value)
+
+    assert stackchan_config.load_config().minimax_asr_timeout == 30.0
+    assert "STACKCHAN_MINIMAX_ASR_TIMEOUT" in caplog.text

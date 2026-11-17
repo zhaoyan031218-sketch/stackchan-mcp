@@ -66,8 +66,11 @@ and `MINIMAX_VOICE_ID`. Mainland China accounts use the default
 with `MINIMAX_MODEL_ID`. MiniMax playback requires ffmpeg (included in the Railway
 image) to decode MP3 to the robot's 24 kHz mono s16le PCM format.
 See [MiniMax voice setup](docs/minimax-voice.md) for
-Railway configuration and a first playback check. This changes speech synthesis;
-microphone transcription still needs its own ASR configuration.
+Railway configuration and a first playback check. Microphone transcription also
+supports MiniMax: `STACKCHAN_ASR_ENGINE=auto` (default) selects MiniMax when
+`TTS_ENGINE=minimax`, reusing `MINIMAX_API_KEY` and `MINIMAX_API_HOST`; other TTS
+engines keep Fish ASR. Explicitly set `STACKCHAN_ASR_ENGINE=minimax` or
+`fish-audio` to select independently. No robot firmware update is required.
 
 `TTS_ENGINE` defaults to `fish-audio`; `edge-tts` is also supported. To opt in to
 ElevenLabs TTS, set `TTS_ENGINE=elevenlabs`, `ELEVENLABS_API_KEY`, and
@@ -149,7 +152,7 @@ Stack-chan takes a photo, returns it to the AI, and the AI describes what it fou
 | Tool | What it does |
 |------|-------------|
 | `stackchan_say` | Speak text through the speaker (Fish Audio TTS or edge-tts fallback) |
-| `stackchan_listen` | Record from mic + transcribe (Groq Whisper via Fish Audio ASR) |
+| `stackchan_listen` | Fetch a ready microphone recording and transcribe through MiniMax or Fish ASR |
 | `stackchan_see` | Capture a photo and preview the same frame on Stack-chan's display for six seconds |
 | `stackchan_face` | Set expression: `calm` `thinking` `happy` `sleepy` `shy` `smug` `pouty` |
 | `stackchan_sense` | Read temperature, humidity, and barometric pressure (ENV III Unit) |
@@ -302,7 +305,7 @@ at `ops/launchd/xyz.stackchan.face-tracker.plist.example`.
 | Expression rendering | [AnimatedGIF](https://github.com/bitbank2/AnimatedGIF) library |
 | MCP server | Python 3.11+, [MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk) |
 | TTS | [Fish Audio](https://fish.audio) API (primary) / edge-tts (free fallback) |
-| ASR / transcription | Groq Whisper via Fish Audio |
+| ASR / transcription | MiniMax asr-1.0 or Fish Audio |
 | AI | Anthropic Claude (or any MCP-compatible client) |
 | Host face detection | OpenCV (optional extra; no face images are persisted) |
 | Remote access | Tailscale (recommended) / Cloudflare tunnel (optional) |

@@ -157,10 +157,13 @@ class StackchanConfig:
     minimax_model_id: str = "speech-2.8-hd"
     minimax_api_host: str = "https://api.minimaxi.com"
     minimax_tts_timeout: float = 30.0
+    asr_engine: str = "auto"
+    minimax_asr_timeout: float = 30.0
 
 
 VALID_AUDIO_MODES = {"auto", "pcm", "wav"}
 VALID_PCM_TRANSPORTS = {"auto", "udp", "tcp", "staged"}
+VALID_ASR_ENGINES = {"auto", "minimax", "fish-audio"}
 PCM_SAMPLE_RATE = 24000
 PCM_CHANNELS = 1
 PCM_SAMPLE_WIDTH = 2
@@ -179,6 +182,14 @@ EDGE_VOICES = {
     "zh": "zh-CN-YunxiNeural",
     "en": "en-US-GuyNeural",
 }
+
+
+def selected_asr_engine(config: StackchanConfig) -> str:
+    if config.asr_engine not in VALID_ASR_ENGINES:
+        raise ValueError("STACKCHAN_ASR_ENGINE must be auto, minimax, or fish-audio")
+    if config.asr_engine == "auto":
+        return "minimax" if config.tts_engine.strip().lower() == "minimax" else "fish-audio"
+    return config.asr_engine
 
 
 def config_summary(config: StackchanConfig) -> dict[str, Any]:
@@ -241,6 +252,11 @@ def config_summary(config: StackchanConfig) -> dict[str, Any]:
             "minimax_model_id": config.minimax_model_id,
             "minimax_api_host": config.minimax_api_host,
         },
+        "asr": {
+            "engine": selected_asr_engine(config),
+            "fish_audio_key_configured": bool(config.fish_audio_key),
+            "minimax_api_key_configured": bool(config.minimax_api_key),
+        },
         "mcp_auth_token_configured": bool(config.mcp_auth_token),
         "timeouts": {
             "http_play": config.http_play_timeout,
@@ -257,6 +273,7 @@ def config_summary(config: StackchanConfig) -> dict[str, Any]:
             "fish_asr": config.fish_asr_timeout,
             "elevenlabs_tts": config.elevenlabs_tts_timeout,
             "minimax_tts": config.minimax_tts_timeout,
+            "minimax_asr": config.minimax_asr_timeout,
         },
     }
 
@@ -300,6 +317,10 @@ def resolve_mac_ip(value: str | None, stackchan_ip: str, stackchan_port: int = 8
 
 def load_config() -> StackchanConfig:
     load_dotenv()
+
+    asr_engine = os.environ.get("STACKCHAN_ASR_ENGINE", "auto").strip().lower()
+    if asr_engine not in VALID_ASR_ENGINES:
+        raise ValueError("STACKCHAN_ASR_ENGINE must be auto, minimax, or fish-audio")
 
     transport = os.environ.get("STACKCHAN_TRANSPORT", "direct").strip().lower()
     if transport not in {"direct", "relay"}:
@@ -430,6 +451,8 @@ def load_config() -> StackchanConfig:
         minimax_model_id=os.environ.get("MINIMAX_MODEL_ID", "speech-2.8-hd").strip(),
         minimax_api_host=os.environ.get("MINIMAX_API_HOST", "https://api.minimaxi.com").strip().rstrip("/"),
         minimax_tts_timeout=env_positive_float("STACKCHAN_MINIMAX_TTS_TIMEOUT", 30.0),
+        asr_engine=asr_engine,
+        minimax_asr_timeout=env_positive_float("STACKCHAN_MINIMAX_ASR_TIMEOUT", 30.0),
         mcp_auth_token=os.environ.get("STACKCHAN_MCP_AUTH_TOKEN", ""),
         audio_publish_target=os.environ.get("STACKCHAN_AUDIO_PUBLISH_TARGET", ""),
         audio_publish_timeout=env_float_any(

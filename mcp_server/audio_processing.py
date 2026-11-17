@@ -10,6 +10,7 @@ from pathlib import Path
 
 import requests
 
+from . import minimax_asr
 from .audio_server import AUDIO_DIR, TEMP_AUDIO_DIR
 from .elevenlabs_tts import TtsSynthesisError, collect_pcm, synthesize_pcm
 from .minimax_tts import synthesize_pcm as synthesize_minimax_pcm
@@ -20,6 +21,7 @@ from .stackchan_config import (
     PCM_SAMPLE_RATE,
     PCM_SAMPLE_WIDTH,
     StackchanConfig,
+    selected_asr_engine,
 )
 
 logger = logging.getLogger(__name__)
@@ -338,7 +340,26 @@ def iter_fish_pcm_stream(text: str, lang: str, config: StackchanConfig):
         resp.close()
 
 
+def asr_configuration_error(
+    config: StackchanConfig, lang: str, *, for_upload: bool = False,
+) -> str | None:
+    try:
+        engine = selected_asr_engine(config)
+    except ValueError as exc:
+        return str(exc)
+    if engine == "minimax":
+        return minimax_asr.configuration_error(config, lang)
+    if not config.fish_audio_key:
+        action = "uploading" if for_upload else "consuming"
+        return f"Fish Audio key is not configured; set FISH_AUDIO_KEY before {action} audio."
+    return None
+
+
 def transcribe_audio(wav_path: Path, lang: str, config: StackchanConfig) -> dict:
+    if error := asr_configuration_error(config, lang):
+        raise RuntimeError(error)
+    if selected_asr_engine(config) == "minimax":
+        return minimax_asr.transcribe_audio(wav_path, lang, config)
     with open(wav_path, "rb") as f:
         resp = requests.post(
             "https://api.fish.audio/v1/asr",

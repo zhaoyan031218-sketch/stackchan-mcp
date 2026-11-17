@@ -443,8 +443,8 @@ def process_uploaded_wav(
 ) -> dict[str, Any]:
     request_id = request_id or new_request_id()
     started = time.perf_counter()
-    if not config.fish_audio_key:
-        raise RuntimeError("Fish Audio key is not configured; set FISH_AUDIO_KEY before uploading audio.")
+    if error := audio_processing.asr_configuration_error(config, lang, for_upload=True):
+        raise RuntimeError(error)
 
     save_started = time.perf_counter()
     wav_path = save_uploaded_wav(audio_data, audio_dir)
@@ -616,13 +616,15 @@ class VoiceUploadHandler(BaseHTTPRequestHandler):
             write_json(self, 401, {"ok": False, "error": "unauthorized"})
             return
 
-        if not self.voice_server.config.fish_audio_key:
+        if error := audio_processing.asr_configuration_error(
+            self.voice_server.config, self.voice_server.options.lang, for_upload=True,
+        ):
             write_json(
                 self,
                 503,
                 {
                     "ok": False,
-                    "error": "Fish Audio key is not configured; set FISH_AUDIO_KEY before uploading audio.",
+                    "error": error,
                 },
             )
             return

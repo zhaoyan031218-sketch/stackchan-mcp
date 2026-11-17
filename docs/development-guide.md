@@ -28,7 +28,12 @@ push-based Stack-chan voice avatar in this repository.
 - `mcp_server/minimax_tts.py`: custom-voice MiniMax synthesis requesting MP3,
   then decoding with ffmpeg to bounded 24 kHz mono s16le PCM before playback;
   [MiniMax voice setup](minimax-voice.md) documents regional credentials and
-  playback limits. It does not change ASR or firmware.
+  playback limits. It does not change firmware.
+- `mcp_server/minimax_asr.py`: MiniMax `asr-1.0` WAV transcription using the
+  official multipart speech-to-text endpoint. `STACKCHAN_ASR_ENGINE=auto`
+  selects MiniMax for MiniMax TTS and Fish otherwise; explicit provider choices
+  remain independent from speech synthesis. Local configuration is checked
+  before consuming a ready device recording. No provider retry/fallback is added.
 - `start-http.sh`: helper script that starts the MCP server in Streamable HTTP
   mode and launches the public Cloudflare tunnel.
 
@@ -372,7 +377,7 @@ It uses RMS thresholds to trigger recording and to end after silence.
   `stackchan_voice_inbox_clear` to read or clear those background transcripts.
 - `scripts/stackchan_voice_upload_server.py` is the push-mode host receiver for
   browser/phone/PWA inputs. It exposes `POST /voice/upload` for `audio/wav`
-  clients, runs the same Fish ASR path, appends transcript events to the same
+  clients, runs the same selected ASR path, appends transcript events to the same
   inbox, and can forward one transcript into a frontend agent-host's `/wake`
   endpoint when `STACKCHAN_FRONTEND_SESSION_ID` is configured.
 - `./start-voice-upload.sh` starts, stops, and health-checks that receiver. It
@@ -479,6 +484,11 @@ Important environment variables:
   attempt terminates its full rsync/ssh process group before retrying.
 - `TTS_ENGINE`: `fish-audio` or `edge-tts`.
 - `FISH_AUDIO_KEY`: required for Fish Audio TTS/ASR.
+- `STACKCHAN_ASR_ENGINE`: `auto` (default), `minimax`, or `fish-audio`. Auto uses
+  MiniMax for `TTS_ENGINE=minimax`; other TTS engines retain Fish transcription.
+- MiniMax ASR reuses `MINIMAX_API_KEY` and `MINIMAX_API_HOST`; it uses `asr-1.0`,
+  independently of `MINIMAX_MODEL_ID` for TTS. `STACKCHAN_MINIMAX_ASR_TIMEOUT`
+  defaults to 30 seconds and must be finite and positive.
 - `EDGE_TTS_BIN`: path to `edge-tts` when using the edge TTS fallback.
 - `STACKCHAN_AUDIO_MODE`: `wav` by default; use `auto` to try PCM with WAV
   fallback or `pcm` to force PCM without fallback.
