@@ -711,9 +711,10 @@ static void handleSnapshot() {
         Serial.println("[HTTP] Camera preview unavailable; returning JPEG normally");
     }
 
-    server.send_P(200, "image/jpeg", (const char*)jpgBuf, jpgLen);
+    const bool prepared = server.send_P(200, "image/jpeg", (const char*)jpgBuf, jpgLen);
     free(jpgBuf);
-    Serial.printf("[HTTP] GET /snapshot -> %u bytes JPEG\n", (unsigned)jpgLen);
+    Serial.printf("[HTTP] GET /snapshot -> %u bytes JPEG reply=%s\n",
+                  (unsigned)jpgLen, prepared ? "prepared" : "buffer_failed");
 }
 
 // POST /camera/session {"idle_timeout_ms": 5000}

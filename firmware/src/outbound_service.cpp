@@ -4,12 +4,14 @@
 #include <WebSocketsClient.h>
 #include <WiFi.h>
 #include <atomic>
+#include <esp_system.h>
 #include <mbedtls/x509_crt.h>
 #include <sys/time.h>
 #include <time.h>
 
 #include "config_loader.h"
 #include "firmware_command.h"
+#include "outbound_ws_writer.h"
 #include "playback_service.h"
 
 namespace {
@@ -24,7 +26,22 @@ static std::atomic<uint32_t> generation{1};
 static std::atomic<bool> connected{false};
 static FirmwareCommand command;
 static TaskHandle_t networkTask = nullptr;
-static WebSocketsClient socket;
+
+class OutboundSocket : public WebSocketsClient {
+public:
+    outbound::BinaryWriteResult sendBoundedBinary(const uint8_t* data, size_t size,
+                                                 bool (*current)()) {
+        return outbound::writeMaskedBinary(data, size,
+            [this](uint8_t* frame, size_t bytes) -> size_t {
+                if (!isConnected()) return 0;
+                // Use the library's TLS connection and bounded write handling,
+                // but not its large-frame sendBIN path (which uses a zero mask).
+                return write(&_client, frame, bytes);
+            }, []() -> uint32_t { return esp_random(); }, current);
+    }
+};
+
+static OutboundSocket socket;
 static outbound::MessageBuffer fragments(ps_malloc);
 static uint32_t fragmentStartedMs = 0;
 static uint32_t lastHeartbeatMs = 0;
@@ -96,12 +113,14 @@ static void receiveMessage(bool binary, const uint8_t* data, size_t size) {
 static void onSocketEvent(WStype_t type, uint8_t* data, size_t size) {
     switch (type) {
         case WStype_CONNECTED:
+            Serial.println("[OUTBOUND] Channel connected");
             generation.fetch_add(1);
             connected.store(true);
             lastHeartbeatMs = millis();
             if (!socket.sendTXT("{\"type\":\"hello\",\"v\":1}")) closeConnection();
             break;
         case WStype_DISCONNECTED:
+            Serial.println("[OUTBOUND] Channel disconnected");
             invalidateConnection();
             break;
         case WStype_TEXT:
@@ -126,6 +145,7 @@ static void onSocketEvent(WStype_t type, uint8_t* data, size_t size) {
             }
             break;
         case WStype_ERROR:
+            Serial.println("[OUTBOUND] WebSocket error");
             closeConnection();
             break;
         default:
@@ -134,7 +154,10 @@ static void onSocketEvent(WStype_t type, uint8_t* data, size_t size) {
 }
 
 static bool sendResponse() {
-    if (!currentCommand()) return false;
+    if (!currentCommand()) {
+        Serial.println("[OUTBOUND] Reply expired before metadata");
+        return false;
+    }
     JsonDocument response;
     response["id"] = command.info.id;
     response["status"] = command.status;
@@ -154,9 +177,24 @@ static bool sendResponse() {
     if (response.overflowed() || measureJson(response) > outbound::MAX_TEXT_BYTES) return false;
     String text;
     serializeJson(response, text);
-    if (!currentCommand() || !socket.sendTXT(text) || !currentCommand()) return false;
-    return !command.binaryFrame || socket.sendBIN(
-        command.binaryFrame, command.binarySize + outbound::BINARY_HEADER_BYTES);
+    if (!currentCommand() || !socket.sendTXT(text)) {
+        Serial.println("[OUTBOUND] Reply metadata send failed or expired");
+        return false;
+    }
+    if (!command.binaryFrame) return true;
+    const size_t bytes = command.binarySize + outbound::BINARY_HEADER_BYTES;
+    const uint32_t started = millis();
+    Serial.printf("[OUTBOUND] Binary reply start bytes=%u heap=%u psram=%u\n",
+                  (unsigned)bytes, ESP.getFreeHeap(), ESP.getFreePsram());
+    const auto result = socket.sendBoundedBinary(command.binaryFrame, bytes, currentCommand);
+    const char* status = "write_failed";
+    if (result.status == outbound::BinaryWriteStatus::COMPLETE) status = "sent";
+    else if (result.status == outbound::BinaryWriteStatus::EXPIRED) status = "expired";
+    else if (result.status == outbound::BinaryWriteStatus::INVALID) status = "invalid";
+    Serial.printf("[OUTBOUND] Binary reply %s bytes=%u/%u frames=%u elapsed_ms=%u\n",
+                  status, (unsigned)result.payloadBytes, (unsigned)bytes,
+                  (unsigned)result.frames, (unsigned)(millis() - started));
+    return result.status == outbound::BinaryWriteStatus::COMPLETE;
 }
 
 static void outboundNetworkTask(void*) {

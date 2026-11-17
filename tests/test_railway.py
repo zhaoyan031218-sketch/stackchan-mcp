@@ -26,6 +26,20 @@ CONTROL_TOKEN = "test-control-0123456789abcdefghijklmnop"
 AUTH = {"Authorization": f"Bearer {MCP_TOKEN}"}
 
 
+@pytest.fixture(scope="module")
+def firmware_ws_encoder(tmp_path_factory):
+    compiler = shutil.which("g++")
+    if not compiler:
+        pytest.skip("firmware wire-format integration test requires g++")
+    executable = tmp_path_factory.mktemp("ws-encoder") / "encoder"
+    subprocess.run(  # noqa: S603 - compile a fixed repository fixture without a shell.
+        [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror", "-I", str(ROOT / "firmware/src"),
+         str(ROOT / "tests/fixtures/outbound_ws_writer.cpp"), "-o", str(executable)],
+        check=True, capture_output=True, timeout=30,
+    )
+    return executable
+
+
 @pytest.fixture
 def cloud_config(tmp_path):
     # The project loader reads .env relative to its package. A clean copy avoids
@@ -182,6 +196,44 @@ def test_mcp_camera_image_and_first_failure_survive_public_websocket(cloud_confi
                         assert "Relay HTTP 503" in message
                         assert "content type did not match" in message
                         assert "private-metadata" not in message
+    with running_cloud(cloud_config) as base:
+        asyncio.run(exercise(base))
+
+
+@pytest.mark.parametrize("image_size", [7747, 128 * 1024])
+def test_firmware_fragmented_image_reaches_mcp(cloud_config, firmware_ws_encoder, image_size):
+    async def exercise(base):
+        async with (
+            streamablehttp_client(base + "/mcp", headers=AUTH) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            with connect(base.replace("http:", "ws:") + "/stackchan/ws",
+                         additional_headers={"Authorization": f"Bearer {DEVICE_TOKEN}"}) as ws:
+                ws.send(json.dumps({"type": "hello", "v": 1}))
+                assert ws.ping().wait(timeout=2)
+                pending = asyncio.create_task(session.call_tool("stackchan_see", {}))
+                command = json.loads(await asyncio.to_thread(ws.recv, timeout=3))
+                assert command["path"] == "/snapshot"
+                jpeg = b"\xff\xd8" + bytes(i % 256 for i in range(image_size - 4)) + b"\xff\xd9"
+                wire = subprocess.run(  # noqa: S603 - fixed, locally compiled firmware fixture.
+                    [str(firmware_ws_encoder)], input=b"SCB1" + command["id"].encode() + jpeg,
+                    capture_output=True, check=True, timeout=5,
+                ).stdout
+                ws.send(json.dumps({"id": command["id"], "status": 200,
+                                    "binary_size": len(jpeg), "content_type": "image/jpeg"}))
+                # Already-framed production C++ output: bypass the Python sender's
+                # framing so the real server independently validates/reassembles it.
+                ws.socket.sendall(wire)
+                result = await asyncio.wait_for(pending, timeout=3)
+                assert result.content[0].type == "image"
+                assert base64.b64decode(result.content[0].data) == jpeg
+                # FIN/continuation correctness must leave the connection reusable.
+                pending = asyncio.create_task(session.call_tool("stackchan_face", {"expression": "happy"}))
+                command = json.loads(await asyncio.to_thread(ws.recv, timeout=3))
+                assert command["path"] == "/face"
+                ws.send(json.dumps({"id": command["id"], "status": 200, "body": {"success": True}}))
+                assert "Face: happy" in (await asyncio.wait_for(pending, timeout=3)).content[0].text
     with running_cloud(cloud_config) as base:
         asyncio.run(exercise(base))
 

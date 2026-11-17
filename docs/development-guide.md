@@ -6,6 +6,10 @@ push-based Stack-chan voice avatar in this repository.
 ## Repository Map
 
 - `firmware/`: Arduino/PlatformIO firmware for M5Stack CoreS3.
+- `firmware/src/outbound_ws_writer.h`: bounded, randomly masked WebSocket
+  fragments for image/audio replies over the existing TLS connection. Native
+  tests cover partial writes and expiry; Python integration tests compile this
+  same C++ writer and send its wire bytes to the real WebSocket/MCP service.
 - `firmware/src/`: firmware services for HTTP control, microphone capture,
   playback, face display, servos, camera, Wi-Fi, notifications, and chat.
 - `firmware/data/`: SPIFFS face PNGs that are uploaded to the device.

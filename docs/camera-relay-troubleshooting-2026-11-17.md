@@ -97,6 +97,77 @@ send diagnostics, frame handling, or allocation changes are necessary. Do not
 change pins, disable TLS, increase frame limits, or repeatedly reboot based
 solely on the old generic 503.
 
+## Follow-up: metadata accepted, binary message interrupted
+
+After a device reconnect, the new diagnostic returned:
+
+```text
+Relay HTTP 503: Device announced binary data, then disconnected before it arrived; command was not retried.
+```
+
+This establishes that the server accepted the reply's request ID, status,
+binary size and content type, then lost the channel before receiving the
+complete WebSocket binary message. It does not distinguish zero bytes from a
+partial message; the ASGI receiver only yields complete messages. The serial
+excerpt repeated the old 7,747-byte capture, so it is not treated as a fresh
+capture timestamp. The new server result is the decisive additional evidence.
+
+Inspection of pinned arduinoWebSockets 2.7.2 `WebSockets::sendFrame` found two
+relevant differences between short metadata and larger image replies:
+
+- Only its small internal-buffer path (payload length below 1,400 bytes and
+  enough free heap) generates a random masking key. Larger frames use the
+  initialized all-zero key. RFC 6455 section 5.3 requires unpredictable keys
+  for client-to-server frames; a constant key does not meet that requirement.
+- Larger frames write their header separately, then pass the remaining full
+  payload to TLS. Arduino's TLS wrapper and the WebSockets write loop do support
+  partial writes, so payload size alone does **not** establish a TLS-limit bug.
+  The SDK's nominal maximum TLS content length is 16,384 bytes, larger than the
+  originally observed image. Do not claim that a 7,747-byte JPEG exceeded it.
+
+The firmware change replaces just the binary reply writer with bounded,
+randomly masked RFC 6455 fragments on the same authenticated TLS connection.
+It uses a 1,032-byte stack scratch buffer, retains the original data in PSRAM,
+checks command validity between writes, handles accepted prefixes without
+replay, and closes on incomplete output. No new library version or dependency
+cooldown exception is involved. The relay protocol and size limits stay intact.
+
+New serial logs report connection state and binary send progress. `sent` means
+the local TLS writer accepted the complete message, not that Kelivo displayed
+it. Snapshot logging now distinguishes a prepared reply from response-buffer
+failure instead of unconditionally reporting preparation success.
+
+This is a real transport implementation correction and a candidate fix for the
+observed interruption. **No capture of the original on-wire traffic or live
+device test proves that Railway rejected the fixed mask, or that this change
+alone resolves the physical failure.** The next device test is still required.
+
+Validation passed: both CoreS3 build environments (without private credentials),
+99 native test cases, 629 Python tests, the 123-test MCP gate, ruff, pyright,
+the repository security audit and high-severity firmware checks (no defects). Native tests
+cover masking, continuation/FIN, boundary sizes through a 512 KiB recording,
+short writes, failure and expiry without replay. A C++ fixture using the exact
+production writer feeds real Uvicorn/WebSocket/MCP servers with 7,747-byte and
+128 KiB synthetic images; both arrive byte-for-byte intact and the connection
+continues to handle a face command. These host tests do not emulate ESP32 TLS,
+radio conditions or Railway's proxy.
+
+Firmware verification commands:
+
+```sh
+pio test -d firmware -e native
+pio run -d firmware -e m5stack-cores3-public
+pio check -d firmware -e m5stack-cores3-public --severity=high --fail-on-defect=high
+uv run --locked pytest tests/test_railway.py -k firmware_fragmented
+```
+
+The public build is for compilation validation only. The user's upload must be
+rebuilt locally using `m5stack-cores3` and their existing private `src/config.h`.
+The source update consists of `outbound_service.cpp`, `outbound_ws_writer.h`
+and `http_server.cpp`; it does not contain or overwrite credentials or face assets.
+
+Reference: [RFC 6455 masking requirements](https://www.rfc-editor.org/rfc/rfc6455#section-5.3).
+
 ## Code references
 
 - `firmware/src/camera_service.cpp`: capture, conversion and bus recovery.

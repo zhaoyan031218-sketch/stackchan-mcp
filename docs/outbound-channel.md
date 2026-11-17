@@ -117,6 +117,17 @@ JSON response, then the same binary header and JPEG bytes. Both ID and length
 must match the pending request; old or mismatched replies cannot finish a new
 request. Invalid framing closes the channel.
 
+Firmware transmits binary replies as one RFC 6455 message split into at most
+1,024-byte payload fragments. The first frame uses the binary opcode and later
+frames use continuation; FIN is set only on the last frame. Each frame gets a
+new hardware-random mask. The existing TLS connection writes a stack buffer
+of at most 1,032 bytes at a time, while the full response stays in PSRAM.
+`SCB1` and the request ID appear once per message, not once per fragment; the
+server's WebSocket implementation reassembles the original message before relay
+validation. No server-protocol change or additional full-image allocation is
+needed. Partial writes resume at the accepted byte offset; an expired or failed
+send closes the connection without replaying the command or partial message.
+
 Recording replies use `content_type: audio/wav` and the same binary envelope.
 The device copies the recording before consuming it; allocation/size failures
 leave it available. A lost connection after consumption can still lose a reply,
