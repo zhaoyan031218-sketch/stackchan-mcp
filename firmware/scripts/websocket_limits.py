@@ -37,6 +37,70 @@ def patched_header(text: str) -> str:
     return text.replace(LIMIT_DECLARATION, LIMIT_OVERRIDE)
 
 
+def patched_read_callback(text: str) -> str:
+    """Patch the synchronous pinned read callback; connect/write stay unchanged."""
+    original = "#else\n    unsigned long t = millis();\n    ssize_t len;"
+    text = replace_once(text, original, (
+        "#else\n    const size_t stackchanRequested = n;\n"
+        "    unsigned long t = millis();\n    ssize_t len;"
+    ), "receive progress counter")
+
+    for message, event in (
+        ('[readCb] tcp is null!\\n', "rx_no_tcp"),
+        ('[readCb] not connected!\\n', "rx_disconnected"),
+        ('[readCb] receive TIMEOUT! %lu\\n', "rx_timeout"),
+    ):
+        arguments = ', (millis() - t)' if event == "rx_timeout" else ""
+        original = f'            DEBUG_WEBSOCKETS("{message}"{arguments});'
+        text = replace_once(text, original, (
+            f'            stackchanWebSocketDiagnostic("{event}", 1002, stackchanRequested, stackchanRequested - n);\n'
+        ) + original, f"{event} diagnostic")
+
+    original = "    while(n > 0) {\n        if(client->tcp == NULL) {"
+    text = replace_once(text, original, (
+        "    while(n > 0) {\n"
+        "        if(!stackchanWebSocketReadCurrent()) {\n"
+        '            stackchanWebSocketDiagnostic("rx_deadline", 1002, stackchanRequested, stackchanRequested - n);\n'
+        "            if(cb) cb(client, false);\n"
+        "            return false;\n"
+        "        }\n"
+        "        if(client->tcp == NULL) {"
+    ), "receive deadline before read")
+
+    text = replace_once(text,
+        "        if((millis() - t) > WEBSOCKETS_TCP_TIMEOUT) {",
+        "        if(stackchanWebSocketReadIdleExpired(t)) {",
+        "receive idle timeout")
+
+    original = "            n -= len;\n            // DEBUG_WEBSOCKETS(\"Receive %d left %d!\\n\", len, n);"
+    text = replace_once(text, original, original.replace(
+        "            n -= len;", "            n -= len;\n"
+        "            stackchanWebSocketReadProgress(static_cast<size_t>(len));"
+    ), "receive progress notification")
+
+    original = "        if(n > 0) {\n            WEBSOCKETS_YIELD();"
+    text = replace_once(text, original, (
+        "        // A read can return after the deadline due to task preemption.\n"
+        "        if(!stackchanWebSocketReadCurrent()) {\n"
+        '            stackchanWebSocketDiagnostic("rx_deadline", 1002, stackchanRequested, stackchanRequested - n);\n'
+        "            if(cb) cb(client, false);\n"
+        "            return false;\n"
+        "        }\n"
+    ) + original, "receive deadline after read")
+    return text
+
+
+def read_callback_span(text: str) -> tuple[int, int]:
+    signature = "bool WebSockets::readCb(WSclient_t * client, uint8_t * out, size_t n, WSreadWaitCb cb) {"
+    if text.count(signature) != 1:
+        raise RuntimeError("WebSockets receive callback changed")
+    start = text.index(signature)
+    end = text.find("\n}\n", start)
+    if end < 0:
+        raise RuntimeError("WebSockets receive callback ending changed")
+    return start, end + 3
+
+
 def patched_source(text: str) -> str:
     original = "payload = (uint8_t *)malloc(header->payloadLen + 1);"
     text = replace_once(text, original, (
@@ -52,6 +116,12 @@ def patched_source(text: str) -> str:
         "extern void stackchanWebSocketDiagnostic(const char* event, uint16_t code,\n"
         "                                        size_t expected, size_t received);"
     ), "diagnostic declaration")
+    original = "                                        size_t expected, size_t received);"
+    text = replace_once(text, original, original + (
+        "\nextern bool stackchanWebSocketReadIdleExpired(uint32_t defaultReadLastProgressMs);\n"
+        "extern bool stackchanWebSocketReadCurrent();\n"
+        "extern void stackchanWebSocketReadProgress(size_t bytes);"
+    ), "receive policy declarations")
 
     original = "void WebSockets::clientDisconnect(WSclient_t * client, uint16_t code, char * reason, size_t reasonLen) {"
     text = replace_once(text, original, original + (
@@ -92,23 +162,13 @@ def patched_source(text: str) -> str:
         "#ifndef NODEBUG_WEBSOCKETS"
     ), "peer close diagnostic")
 
-    original = "#else\n    unsigned long t = millis();\n    ssize_t len;"
-    text = replace_once(text, original, (
-        "#else\n    const size_t stackchanRequested = n;\n"
-        "    unsigned long t = millis();\n    ssize_t len;"
-    ), "receive progress counter")
-
-    for message, event in (
-        ('[readCb] tcp is null!\\n', "rx_no_tcp"),
-        ('[readCb] not connected!\\n', "rx_disconnected"),
-        ('[readCb] receive TIMEOUT! %lu\\n', "rx_timeout"),
-    ):
-        arguments = ', (millis() - t)' if event == "rx_timeout" else ""
-        original = f'            DEBUG_WEBSOCKETS("{message}"{arguments});'
-        text = replace_once(text, original, (
-            f'            stackchanWebSocketDiagnostic("{event}", 1002, stackchanRequested, stackchanRequested - n);\n'
-        ) + original, f"{event} diagnostic")
-    if text.count("stackchanWebSocketDiagnostic(") != 9 or text.count("ps_malloc(header->payloadLen + 1)") != 1:
+    start, end = read_callback_span(text)
+    text = text[:start] + patched_read_callback(text[start:end]) + text[end:]
+    if (text.count("stackchanWebSocketDiagnostic(") != 11
+            or text.count("ps_malloc(header->payloadLen + 1)") != 1
+            or text.count("stackchanWebSocketReadIdleExpired(") != 2
+            or text.count("stackchanWebSocketReadCurrent(") != 3
+            or text.count("stackchanWebSocketReadProgress(") != 2):
         raise RuntimeError("WebSockets diagnostic or allocation patch is inconsistent")
     return text
 

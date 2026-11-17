@@ -36,7 +36,7 @@ void setup() {
         for (;;) delay(1000);
     }
 #endif
-    Serial.println("\n[BOOT] Stack-chan recovery-20261118.2");
+    Serial.println("\n[BOOT] Stack-chan recovery-20261118.3");
     Serial.printf("[BOOT] reset_reason=%d heap=%u psram=%u\n",
                   static_cast<int>(esp_reset_reason()), ESP.getFreeHeap(), ESP.getFreePsram());
 #if defined(STACKCHAN_RUNTIME_CONFIG)

@@ -693,3 +693,14 @@ See [PCM disconnect troubleshooting](wss-pcm-disconnect-troubleshooting-2026-11-
 The separate `--monitor` mode reads bounded, filtered diagnostics without sending
 configuration or reset commands. Diagnostic builds are not evidence that a
 reported hardware/network failure has been resolved.
+
+The `recovery-20261118.2` device trace identified a 2-second library receive-idle
+timeout after 13,900 of 49,188 bytes, while the command still had 12.8 seconds
+remaining. The next recovery image uses an 8-second no-progress budget while
+awaiting a command's binary payload, including frame headers and continuation
+frames. Only positive byte reads refresh that budget. Each receive iteration
+also checks the command's 20-second monotonic limit and relay expiry; progress
+cannot extend either deadline. Connection, handshake, text-only and write
+timeouts remain unchanged. Failed commands are not replayed. This addresses
+the observed early close without claiming to identify the source of the
+underlying network pause.

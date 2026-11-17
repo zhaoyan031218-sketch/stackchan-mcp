@@ -1,4 +1,4 @@
-# CoreS3 预编译恢复包：recovery-20261118.2
+# CoreS3 预编译恢复包：recovery-20261118.3
 
 适用：M5Stack CoreS3 Stack-chan、Windows 电脑、Railway + Kelivo。
 默认服务：`gojobody.up.railway.app`。
@@ -10,20 +10,23 @@
 
 ## 已经烧录上一版：保留配置升级
 
-本版修复了外接环境传感器的 ACK 误检测，并补充 PCM 断连诊断。
-**音频断连的实机原因尚未确认，本版不能宣称已经修好声音。**
+上一版实机日志已确认：49,188 字节的 PCM 帧仅收到 13,900 字节，便触发
+2 秒接收空闲超时，固件主动断开；当时命令还剩约 12.8 秒有效时间。
+本版将待收音频的空闲等待调整为 8 秒，并在接收过程中持续检查整条命令的
+20 秒上限和服务器截止时间。已保留上一版的传感器 ACK 修复。
+**软件回归不能代替实机验收；刷完后仍需测试一次短句。**
 
-完整解压 `cores3-recovery-20261118.2.zip`，在新解压目录打开终端：
+完整解压 `cores3-recovery-20261118.3.zip`，在新解压目录打开终端：
 
 ```powershell
-.\START-SETUP.cmd --flash-only --port COM5
+.\START-SETUP.cmd --flash-only --port COM7
 ```
 
-把 `COM5` 换成机器人实际端口。它只更新固件，保留上一版已经保存的 Wi-Fi 和
+`COM7` 是目前确认的机器人端口。它只更新固件，保留上一版已经保存的 Wi-Fi 和
 设备 token，不获取证书或重新要求填写凭据。完成后开诊断监视器：
 
 ```powershell
-.\.venv\Scripts\python.exe scripts\setup_prebuilt.py --monitor --port COM5
+.\.venv\Scripts\python.exe scripts\setup_prebuilt.py --monitor --port COM7
 ```
 
 监视器默认运行 90 秒，不发送配置或复位命令。启动后在 Kelivo 只调用一次
@@ -38,7 +41,7 @@
 
 ## 首次使用方法
 
-1. 下载独立的 `cores3-recovery-20261118.2.zip`，完整解压到新文件夹。
+1. 下载独立的 `cores3-recovery-20261118.3.zip`，完整解压到新文件夹。
    不要在 ZIP 里面直接双击脚本，也不要把旧工程覆盖进去。
 2. 用支持数据的 USB 线连接 CoreS3，关闭已有串口监视器。
 3. 双击解压目录的 `START-SETUP.cmd`。它安装固定版本的 USB 工具、校验包内文件，
@@ -76,6 +79,8 @@ WSS 路由 `/stackchan/ws`，并确认 Railway 为单副本、单区域、单 wo
 
 ## 这一版修复了什么
 
+- 音频接收不再因短暂超过 2 秒的停顿提前断开；只在收到字节时刷新 8 秒空闲计时，
+  同时保留整条命令的截止时间，不自动重放失败命令。
 - 保留 Railway 部署适配与 MiniMax MP3 转 24 kHz 单声道 s16le PCM 修复。
 - 保留照片/录音通过 WebSocket 分片回传的修复。
 - 摄像头时钟配置对齐 CoreS3，避免误占 GPIO 2 外部 I2C 引脚。

@@ -2,12 +2,16 @@
 
 import json
 import runpy
+import shutil
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 SCRIPT = Path(__file__).resolve().parents[1] / "firmware/scripts/websocket_limits.py"
+FIXTURES = Path(__file__).with_name("fixtures")
+READ_CALLBACK = (FIXTURES / "websockets_2_7_2_readcb.cpp").read_text()
 LIMIT = "#define WEBSOCKETS_MAX_DATA_SIZE (15 * 1024)"
 HEADER = "\n".join([LIMIT] * 6) + "\n"
 SOURCE = r'''#include "WebSockets.h"
@@ -40,35 +44,10 @@ void WebSockets::handleWebsocketPayloadCb(WSclient_t * client, bool ok, uint8_t 
         }
     }
 }
-bool WebSockets::readCb(WSclient_t * client, uint8_t * out, size_t n, WSreadWaitCb cb) {
-#if (WEBSOCKETS_NETWORK_TYPE == NETWORK_ESP8266_ASYNC)
-    return false;
-#else
-    unsigned long t = millis();
-    ssize_t len;
-    while(n > 0) {
-        if(client->tcp == NULL) {
-            DEBUG_WEBSOCKETS("[readCb] tcp is null!\n");
-            return false;
-        }
-        if(!client->tcp->connected()) {
-            DEBUG_WEBSOCKETS("[readCb] not connected!\n");
-            return false;
-        }
-        if((millis() - t) > WEBSOCKETS_TCP_TIMEOUT) {
-            DEBUG_WEBSOCKETS("[readCb] receive TIMEOUT! %lu\n", (millis() - t));
-            return false;
-        }
-        len = client->tcp->read(out, n);
-        if(len > 0) { t = millis(); out += len; n -= len; }
-    }
-#endif
-    return true;
-}
-'''
+''' + READ_CALLBACK
 
 
-@pytest.fixture
+@pytest.fixture(scope="module")
 def patcher():
     registered = []
     environment = SimpleNamespace(AddBuildMiddleware=lambda *args: registered.append(args))
@@ -98,7 +77,7 @@ def test_patch_is_idempotent_and_keeps_numeric_diagnostics_when_debug_disabled(t
     assert header.read_text() == once_header
     assert once_header.count("#ifndef WEBSOCKETS_MAX_DATA_SIZE") == 6
     assert once_source.count("ps_malloc(header->payloadLen + 1)") == 1
-    assert once_source.count("stackchanWebSocketDiagnostic(") == 9
+    assert once_source.count("stackchanWebSocketDiagnostic(") == 11
     assert '#undef NODEBUG_WEBSOCKETS' not in once_source
     assert once_source.index('stackchanWebSocketDiagnostic("peer_close"') < once_source.index("#ifndef NODEBUG_WEBSOCKETS")
     assert 'stackchanWebSocketDiagnostic("library_close", code, 0, 0)' in once_source
@@ -120,7 +99,7 @@ def test_existing_frame_limit_and_psram_patch_can_be_upgraded(tmp_path, patcher)
     )
     source.write_text(SOURCE.replace(allocation, old_psram_patch))
     patcher.patch_dependency(source, root)
-    assert source.read_text().count("stackchanWebSocketDiagnostic(") == 9
+    assert source.read_text().count("stackchanWebSocketDiagnostic(") == 11
     assert source.read_text().count("ps_malloc(header->payloadLen + 1)") == 1
 
 
@@ -184,3 +163,54 @@ def test_dependency_outside_project_cache_is_never_modified(tmp_path, patcher):
         patcher.patch_dependency(source, root / "different-project")
     assert source.read_text() == SOURCE
     assert header.read_text() == HEADER
+
+
+def test_receive_policy_patch_does_not_change_connect_or_write_timeout(patcher):
+    unchanged_code = "\nvoid unchanged() { if((millis() - t) > WEBSOCKETS_TCP_TIMEOUT) { return; } }\n"
+    result = patcher.patched_source(SOURCE + unchanged_code)
+    assert result.endswith(unchanged_code)
+    assert result.count("if(stackchanWebSocketReadIdleExpired(t))") == 1
+    assert result.count('stackchanWebSocketDiagnostic("rx_deadline"') == 2
+
+
+@pytest.fixture(scope="module")
+def receiver_binaries(tmp_path_factory, patcher):
+    compiler = shutil.which("g++")
+    if not compiler:
+        pytest.skip("The pinned WebSockets receive callback regression needs host g++")
+    root = tmp_path_factory.mktemp("websocket-read-callback")
+    harness = (FIXTURES / "websocket_receive_harness.cpp").read_text()
+    binaries = {}
+    for label, callback in (("original", READ_CALLBACK), ("patched", patcher.patched_read_callback(READ_CALLBACK))):
+        build = root / label
+        build.mkdir()
+        (build / "read_callback_under_test.inc").write_text(callback)
+        (build / "harness.cpp").write_text(harness)
+        binary = build / "receive"
+        subprocess.run(  # noqa: S603 - local compiler and checked-in test fixtures, no shell.
+            [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+             f"-DCALLBACK_PATCHED={int(label == 'patched')}", str(build / "harness.cpp"), "-o", str(binary)],
+            check=True, capture_output=True, text=True, timeout=30,
+        )
+        binaries[label] = binary
+    return binaries
+
+
+def test_original_callback_reproduces_observed_gap_failure(receiver_binaries):
+    result = subprocess.run(  # noqa: S603 - executable compiled by this fixture.
+        [str(receiver_binaries["original"]), "observed-gap"],
+        check=True, capture_output=True, text=True, timeout=5,
+    )
+    assert "received=13900 success=0" in result.stdout
+
+
+@pytest.mark.parametrize("scenario", [
+    "observed-gap", "drip-deadline", "pcm-idle", "control-idle", "last-read-deadline",
+    "shared-idle", "disconnect", "zero-progress",
+])
+def test_patched_real_callback_receive_boundaries(receiver_binaries, scenario):
+    result = subprocess.run(  # noqa: S603 - executable compiled by this fixture.
+        [str(receiver_binaries["patched"]), scenario],
+        check=True, capture_output=True, text=True, timeout=5,
+    )
+    assert f"PASS {scenario}" in result.stdout

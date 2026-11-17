@@ -73,15 +73,20 @@ def instructions(profile: str) -> str:
     if profile == "runtime-configurable":
         setup = """
 Windows 使用方法（Python 3.11 或更新版本）：
-已经配好 Wi-Fi／Railway、只升级固件时，在新解压目录打开终端运行：
-  .\\START-SETUP.cmd --flash-only --port COM5
-将 COM5 换成实际端口。此模式验证文件后只烧录，保留 sc-cloud 配置，不读取证书或重新询问密码／令牌。
+已经配好 Wi-Fi／Railway、只升级固件时，先关闭占用串口的旧监视窗口，在新解压目录打开终端运行：
+  .\\START-SETUP.cmd --flash-only --port COM7
+COM7 是当前设备端口；若设备管理器显示其他 COM 号，使用实际端口。
+此模式验证文件后只烧录，保留 sc-cloud 配置，不读取证书或重新询问密码／令牌。
 仅适用于已有兼容分区的本项目固件；从未配置过的设备刷完会等待 USB 设置。
+升级请使用上面的带参数命令；直接双击 START-SETUP.cmd 会进入首次配置流程。
 不要为了升级执行 --configure-only，也不要勾选全片擦除。
+烧录完成后保持 USB 连接，设备会自动重启；先等约 8 秒启动配置窗口结束，再等 Wi-Fi／云端连接。
 
 需要观察掉线／播放问题时，另开一次命令（不刷机、不重置、不改设置）：
-  .\\.venv\\Scripts\\python.exe scripts\\setup_prebuilt.py --monitor --port COM5
-监视默认 90 秒后自动结束。开始后在 Kelivo 触发一次短句播放；需要开机日志时可自行按设备 Reset。
+  .\\.venv\\Scripts\\python.exe scripts\\setup_prebuilt.py --monitor --port COM7
+监视默认 90 秒后自动结束。需要本次版本号和开机日志时，先启动监视，再短按一次设备 Reset。
+等日志出现 [OUTBOUND] Channel connected 后，在 Kelivo 触发一次短句播放，保留随后的诊断信息。
+如果 90 秒内未连上，也保留当前日志；不必反复刷机或重新填写配置。
 只显示 BOOT／OUTBOUND／PCM／ENV 和已知 ESP 错误、重启、回溯信息；过滤配置 JSON、Wi-Fi 和网址。
 日志只在终端显示，不保存文件。复制这些日志用于排查；看见“烧录成功”不代表语音问题已修复。
 
@@ -93,8 +98,8 @@ Windows 使用方法（Python 3.11 或更新版本）：
 4. 工具先验证文件和服务 TLS 证书，再烧录现成四个 bin，然后通过 USB 写入设置；设备确认保存后重启。
    默认服务：gojobody.up.railway.app。令牌和 Wi-Fi 密码不写入电脑文件、命令行或构建产物。
 5. 烧录成功但设置未完成时无需再刷固件。在解压目录打开终端运行：
-   .venv\\Scripts\\python.exe scripts\\setup_prebuilt.py --configure-only --port COM5
-   把 COM5 换成当前实际端口；工具等待时可按 CoreS3 Reset 键进入启动后的 8 秒设置窗口。
+   .venv\\Scripts\\python.exe scripts\\setup_prebuilt.py --configure-only --port COM7
+   把 COM7 换成当前实际端口；工具等待时可按 CoreS3 Reset 键进入启动后的 8 秒设置窗口。
    尚未配置的固件会持续等待 USB 设置。设备重置后 COM 号可能变化，需在设备管理器重新确认。
 
 换服务时在上述命令后加 --host 新的完整域名（不含 https:// 或 /mcp）。

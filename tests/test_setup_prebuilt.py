@@ -306,3 +306,33 @@ def test_setup_modes_cannot_be_combined(monkeypatch: pytest.MonkeyPatch) -> None
     with pytest.raises(SystemExit) as error:
         setup_prebuilt.main()
     assert error.value.code == 2
+
+
+def test_long_transport_diagnostic_survives_every_serial_split_and_timeout() -> None:
+    # A real-sized diagnostic spans multiple USB packets.
+    # The monitor must preserve fields even when reads split inside largest_internal.
+    line = (b"[OUTBOUND] event=frame_payload_timeout code=1002 phase=1 expected=49188 "
+            b"received=13900 age_ms=7015 deadline_left_ms=12785 validity=current "
+            b"heap=471092 psram=7030044 largest_internal=471092 largest_psram=6815744 "
+            b"stack_min=3456 task=network\r\n")
+    for split in range(len(line) + 1):
+        reader = setup_prebuilt.ProtocolReader()
+        connection = FakeSerial([line[:split], b"", line[split:]])
+        complete = None
+        for _ in range(3):
+            current = reader.read_line(connection)
+            if current is not None:
+                assert complete is None
+                complete = current
+        assert complete == line
+        assert setup_prebuilt.diagnostic_line(complete) == line.decode().strip()
+
+
+def test_diagnostic_oversize_discards_whole_line_without_joining_field_fragments() -> None:
+    reader = setup_prebuilt.ProtocolReader()
+    connection = FakeSerial([b"[OUTBOUND] " + b"x" * 2030, b"largest_internal=471092", b"\n",
+                             b"[OUTBOUND] Channel connected\n"])
+    assert reader.read_line(connection) is None
+    assert reader.read_line(connection) is None
+    assert reader.read_line(connection) is None
+    assert reader.read_line(connection) == b"[OUTBOUND] Channel connected\n"

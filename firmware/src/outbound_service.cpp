@@ -13,6 +13,7 @@
 #include "config_loader.h"
 #include "firmware_command.h"
 #include "outbound_diagnostics.h"
+#include "outbound_receive_policy.h"
 #include "outbound_ws_writer.h"
 #include "playback_service.h"
 
@@ -47,6 +48,8 @@ static OutboundSocket socket;
 static outbound::MessageBuffer fragments(ps_malloc);
 static uint32_t fragmentStartedMs = 0;
 static uint32_t lastHeartbeatMs = 0;
+static outbound::BinaryReceiveWindow binaryReceiveWindow;
+static bool hasConnected = false;
 
 static int64_t utcNowMs() {
     timeval now;
@@ -114,6 +117,7 @@ static void receiveText(const uint8_t* data, size_t size) {
     }
     command.generation = generation.load();
     command.startedMs = millis();
+    if (command.info.binarySize) binaryReceiveWindow.begin(command.startedMs);
     phase.store(command.info.binarySize ? Phase::RECEIVING : Phase::QUEUED);
     logTransportEvent("rx_envelope", 0, command.info.binarySize, size);
 }
@@ -153,6 +157,7 @@ static void onSocketEvent(WStype_t type, uint8_t* data, size_t size) {
             Serial.println("[OUTBOUND] Channel connected");
             generation.fetch_add(1);
             connected.store(true);
+            hasConnected = true;
             lastHeartbeatMs = millis();
             if (!socket.sendTXT("{\"type\":\"hello\",\"v\":1}")) closeConnection("hello_write_failed");
             break;
@@ -295,7 +300,9 @@ static void outboundNetworkTask(void*) {
             } else if (stage == WaitStage::CLOCK) {
                 Serial.println("[OUTBOUND] Waiting for NTP time; TLS has not started");
             } else if (stage == WaitStage::SERVER) {
-                Serial.println("[OUTBOUND] WSS not connected; check host, network, CA and DEVICE token");
+                Serial.println(hasConnected
+                    ? "[OUTBOUND] WSS reconnect pending; see preceding receive or close event"
+                    : "[OUTBOUND] Waiting for first WSS connection");
             }
             lastStage = stage;
             lastStageLogMs = stageNow;
@@ -306,10 +313,10 @@ static void outboundNetworkTask(void*) {
             const uint32_t now = millis();
             if (state != Phase::IDLE && !currentCommand()) {
                 closeConnection("command_not_current");
-            } else if (state == Phase::RECEIVING && outbound::deadlineExpired(
-                           now, command.startedMs, outbound::BINARY_TIMEOUT_MS)) {
+            } else if (state == Phase::RECEIVING && binaryReceiveWindow.idleExpired(now)) {
                 closeConnection("binary_wait_timeout", command.info.binarySize, 0);
-            } else if (fragments.active() && outbound::deadlineExpired(
+            } else if (fragments.active() &&
+                       !(state == Phase::RECEIVING && fragments.binary()) && outbound::deadlineExpired(
                            now, fragmentStartedMs, outbound::BINARY_TIMEOUT_MS)) {
                 closeConnection("fragment_wait_timeout", 0, fragments.size());
             } else if (outbound::deadlineExpired(now, lastHeartbeatMs, outbound::HEARTBEAT_MS)) {
@@ -328,6 +335,23 @@ static void outboundNetworkTask(void*) {
 void stackchanWebSocketDiagnostic(const char* event, uint16_t code,
                                  size_t expected, size_t received) {
     logTransportEvent(event, code, expected, received);
+}
+
+bool stackchanWebSocketReadIdleExpired(uint32_t defaultReadLastProgressMs) {
+    return phase.load() == Phase::RECEIVING
+        ? binaryReceiveWindow.idleExpired(millis())
+        : static_cast<uint32_t>(millis() - defaultReadLastProgressMs) > WEBSOCKETS_TCP_TIMEOUT;
+}
+
+bool stackchanWebSocketReadCurrent() {
+    // The synchronous library read blocks the outer network loop. Check the
+    // same generation, monotonic age and relay-supplied absolute expiry inside
+    // that read, including before it reports a completely received frame.
+    return phase.load() != Phase::RECEIVING || currentCommand();
+}
+
+void stackchanWebSocketReadProgress(size_t bytes) {
+    if (phase.load() == Phase::RECEIVING) binaryReceiveWindow.progress(millis(), bytes);
 }
 
 void initOutboundService() {
