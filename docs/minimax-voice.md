@@ -17,6 +17,8 @@
 | `MINIMAX_API_HOST` | 国内：`https://api.minimaxi.com`（默认）；国际：`https://api.minimax.io` |
 | `MINIMAX_MODEL_ID` | `speech-2.8-hd`（默认，可指定账户支持的其他语音模型） |
 | `STACKCHAN_MINIMAX_TTS_TIMEOUT` | `30.0`（默认，秒） |
+| `STACKCHAN_ASR_ENGINE` | `auto`（默认）；MiniMax 发声时也使用 MiniMax 识别，可明确设置 `minimax` 或 `fish-audio` |
+| `STACKCHAN_MINIMAX_ASR_TIMEOUT` | `30.0`（默认，秒） |
 
 MiniMax 模式不要求配置 Fish 或 ElevenLabs 密钥。不要将真实 API Key 或音色 ID
 提交进 Git。配置摘要仅返回密钥和音色是否已配置，不返回实际值。
@@ -29,7 +31,25 @@ MiniMax 模式不要求配置 Fish 或 ElevenLabs 密钥。不要将真实 API K
 实际有没有发声仍需现场确认。MiniMax API 错误会显示 HTTP 状态或数字错误码，
 不回显供应商响应正文、语音文本或密钥。
 
-## 行为与边界
+## 用 MiniMax 听懂录音
+
+如果已经用 `TTS_ENGINE=minimax` 正常说话，更新云端代码后，默认会复用现有的
+`MINIMAX_API_KEY` 和 `MINIMAX_API_HOST` 进行识别，不需要 Fish Audio 账户或密钥。
+已经显式设置 `STACKCHAN_ASR_ENGINE=fish-audio` 的环境则需改为 `minimax` 或 `auto`。
+无需重新烧录机器人，也不改变音色、语音合成模型或 PCM 播放设置。
+
+对机器人说一句短话，停顿让录音结束，再在 Kelivo 调用 `stackchan_listen`。
+该工具先检查是否有待取录音，再验证选定识别服务的配置；缺少密钥等本地配置
+错误会在取走录音之前返回。录音取回后上传到所选服务进行转写；账户权限、余额、
+网络或供应商错误可能在此阶段发生，因此收到配置正确提示不等于真实识别已经成功。
+
+识别使用固定的 `asr-1.0` 模型，与发声的 `speech-2.8-hd` 分开；上传带文件头的
+WAV，不把裸 PCM 当成 WAV。请求语言是提示信息，接口没有返回的检测语言不会伪造。
+这是一次录音完成后的工具调用，不会自动开启持续收听或给 Kelivo 主动发送消息。
+
+接口依据：[MiniMax 官方语音识别文档](https://platform.minimax.cn/docs/api-reference/speech-to-text)。
+
+## 语音合成的行为与边界
 
 - 请求官方 `/v1/t2a_v2`，指定 `stream=false`、自定义 `voice_id`、
   24 kHz 单声道 MP3（128 kbps）。先解开 JSON 中的十六进制编码，再由
@@ -46,8 +66,7 @@ MiniMax 模式不要求配置 Fish 或 ElevenLabs 密钥。不要将真实 API K
 - 解码进程受剩余总时限与输出时长限制，超过 PCM 大小上限会报错而非截断播放。
   网络阶段有连接/读取超时及响应块之间的总耗时检查，并非严格的线程
   墙钟终止定时器。
-- 本次仅加入 TTS。`stackchan_listen` 的 ASR 和后台唤醒/前端投递保持原有配置；
-  仅填写 MiniMax TTS 密钥不会自动开启双向免手动语音对话。
+- 后台唤醒/前端投递仍需单独设置；仅配置识别服务不会自动开启免手动语音对话。
 
 ## 开发验证
 

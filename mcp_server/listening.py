@@ -24,12 +24,12 @@ def capture_ready_recording(
             "status": status,
         }
 
-    if not config.fish_audio_key:
+    if error := audio_processing.asr_configuration_error(config, lang):
         return {
             "ready": True,
             "consumed": False,
             "status": status,
-            "error": "Fish Audio key is not configured; set FISH_AUDIO_KEY before consuming audio.",
+            "error": error,
         }
 
     audio_data = client.get_audio()
@@ -67,11 +67,13 @@ def format_listen_result(result: dict[str, Any]) -> str:
     text = result.get("text", "")
     duration = result.get("duration", 0)
     language = result.get("language", "?")
+    language_label = f", {language}" if language and language != "?" else ""
     if text:
-        return f"👂 Heard ({duration:.1f}s, {language}): \"{text}\""
+        return f"👂 Heard ({duration:.1f}s{language_label}): \"{text}\""
 
     audio_bytes = result.get("audio_bytes", 0)
+    detected_language = f" Detected language: {language}." if language_label else ""
     return (
         f"🎤 Recording captured ({audio_bytes} bytes, {duration:.1f}s) "
-        f"but ASR returned empty text. Detected language: {language}. Audio may be too quiet."
+        f"but ASR returned empty text.{detected_language} Audio may be too quiet."
     )
