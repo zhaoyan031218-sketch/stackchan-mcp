@@ -423,7 +423,8 @@ static bool startDownloadedWavPlayback(uint8_t* wavData, size_t wavSize) {
 }
 
 static void checkPendingPlayback() {
-    if (s_isPlaying || isCameraSessionActive() || !s_downloadCompleteQueue) {
+    if (s_isPlaying || isPcmStreamActive() || isCameraSessionActive() ||
+        M5.Speaker.isPlaying() || !s_downloadCompleteQueue) {
         return;
     }
 
@@ -702,7 +703,10 @@ PlaybackStatus getPlaybackStatus() {
 //  再生完了後の次キュー処理
 // ════════════════════════════════════════
 static void processAudioQueue() {
-    if (s_isPlaying) return;
+    // A queued item remains owned by this queue until the shared speaker and
+    // download pipeline are available. A busy consumer is not a failed item.
+    if (s_isPlaying || s_downloadInFlight || isPcmStreamActive() ||
+        isCameraSessionActive() || M5.Speaker.isPlaying()) return;
 
     clearStaleOutboundPcm();
     setMouthOpen(0.0f);
@@ -732,7 +736,7 @@ static void processAudioQueue() {
     }
 
     checkPendingPlayback();
-    if (s_isPlaying) {
+    if (s_isPlaying || s_downloadInFlight) {
         return;
     }
 
@@ -760,7 +764,9 @@ static void processAudioQueue() {
 bool enqueueAudioTask(const AudioTask& task) {
     AudioTask queuedTask = task;
     queuedTask.sequence = s_nextAudioSequence++;
-    if (s_isPlaying || s_downloadInFlight || isPcmStreamActive()) {
+    if (s_isPlaying || s_downloadInFlight || isPcmStreamActive() ||
+        isCameraSessionActive() || M5.Speaker.isPlaying() ||
+        !s_pcmQueue.empty() || !s_audioQueue.empty()) {
         if (s_audioQueue.size() >= MAX_AUDIO_QUEUE_DEPTH) {
             Serial.printf("[PLAY] Audio queue full; dropped: %s\n", queuedTask.voice_url.c_str());
             return false;
@@ -794,7 +800,8 @@ static bool notifyPlaybackFinished() {
 void updatePlayback() {
     checkPendingPlayback();
 
-    if (s_downloadInFlight && millis() - s_downloadStartedMs > DOWNLOAD_WATCHDOG_MS) {
+    if (s_downloadInFlight && millis() - s_downloadStartedMs > DOWNLOAD_WATCHDOG_MS &&
+        (!s_downloadCompleteQueue || uxQueueMessagesWaiting(s_downloadCompleteQueue) == 0)) {
         Serial.printf("[DOWNLOAD] Watchdog expired after %u ms; restarting device\n",
                       (unsigned)(millis() - s_downloadStartedMs));
         Serial.flush();
@@ -819,6 +826,12 @@ void updatePlayback() {
             clearQueuedPcmPlayback();
         }
         notifyPlaybackFinished();
+    }
+
+    // TCP/UDP playback and camera sessions finish outside this service. They
+    // do not call notifyPlaybackFinished(), so drain their deferred work here.
+    if (!s_isPlaying && (!s_audioQueue.empty() || !s_pcmQueue.empty())) {
+        processAudioQueue();
     }
 }
 

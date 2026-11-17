@@ -51,6 +51,11 @@ bool connectWiFi() {
     Serial.println("\n[WIFI] Starting connection sequence");
     WiFi.mode(WIFI_STA);
 
+#if defined(STACKCHAN_RUNTIME_CONFIG)
+    // Cloud and Wi-Fi credentials are one atomic provisioned configuration.
+    // Old portal credentials must not silently override the new setup.
+    return tryConnect(runtimeWifiSsid(), runtimeWifiPassword());
+#else
     // ── 1. NVS 保存的用户凭证（优先）────────────────────────────────────────
     {
         Preferences prefs;
@@ -94,6 +99,7 @@ bool connectWiFi() {
     // ── 全部失败 ──────────────────────────────────────────────────────────────
     Serial.println("[WIFI] All networks failed");
     return false;
+#endif
 }
 
 void serviceWiFi() {

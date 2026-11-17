@@ -609,6 +609,14 @@ JPEG in this path; the firmware captures RGB565 and converts frames with
 `frame2jpg()`. `initCamera()` releases M5Unified's internal I2C bus because the
 camera SCCB pins share GPIO 11 and 12.
 
+Optional SHT31/QMP6988 environmental sensors use `M5.Ex_I2C` on Port A
+(SDA 2, SCL 1). Address detection must use `scanID`, including the `stop()`
+result: `start()` alone only launches the transfer and can precede a NACK.
+`GET /env` distinguishes no detected sensor (HTTP 200, `success:false`) from
+bus initialization or measurement failure (HTTP 500). Its `bus_ready` and
+`detected` fields report setup state; `sensors` reports valid current readings.
+See `env-probe-ack-troubleshooting-2026-11-18.md` for regression evidence.
+
 ## Development Guidelines
 
 - Prefer small firmware changes that keep the main loop responsive.
@@ -656,3 +664,43 @@ The default `pio run` selects `m5stack-cores3`; cloud uploads explicitly select
 the Railway target so its stricter requirements do not affect LAN builds.
 `scripts/rebuild_robot.py` provides the isolated Windows configuration/build/upload
 flow. See [clean rebuild instructions](../START-HERE.zh-CN.md).
+
+## CoreS3 runtime USB provisioning (recovery-20261118.1)
+
+`m5stack-cores3-runtime` builds a credential-free image with USB provisioning. It
+ignores private `config.h`, reads cloud and Wi-Fi values from one validated NVS
+blob, and never lets old portal Wi-Fi override that configuration. The startup
+window accepts bounded protocol-v1 JSON; unconfigured devices remain in setup.
+Use the precompiled package and `setup_prebuilt.py` on Windows; preserve
+`m5stack-cores3-railway` for the existing private source-build path.
+
+CoreS3 camera XCLK is `-1`; GPIO 2 is external I2C SDA. Microphone `record()`
+submits asynchronous work, so process a frame only after `isRecording()` is zero.
+Deferred WAV/PCM work must drain when external streams or camera ownership ends.
+
+Package completed images with `scripts/package_firmware.py` using the
+`runtime-configurable` profile. It validates the USB setup marker, offsets, sizes,
+checksums and ZIP contents before atomically publishing the archive.
+
+## PCM disconnect diagnostics and retained USB setup
+
+The runtime recovery image now emits fixed event labels for envelope acceptance,
+binary frame/read progress, dispatch, and connection closure. The version-pinned
+WebSockets middleware validates all patch anchors before writing and keeps
+`NODEBUG_WEBSOCKETS`; no peer text, headers, payload bytes or tokens enter logs.
+See [PCM disconnect troubleshooting](wss-pcm-disconnect-troubleshooting-2026-11-18.md).
+`setup_prebuilt.py --flash-only` preserves the existing runtime NVS configuration.
+The separate `--monitor` mode reads bounded, filtered diagnostics without sending
+configuration or reset commands. Diagnostic builds are not evidence that a
+reported hardware/network failure has been resolved.
+
+The `recovery-20261118.2` device trace identified a 2-second library receive-idle
+timeout after 13,900 of 49,188 bytes, while the command still had 12.8 seconds
+remaining. The next recovery image uses an 8-second no-progress budget while
+awaiting a command's binary payload, including frame headers and continuation
+frames. Only positive byte reads refresh that budget. Each receive iteration
+also checks the command's 20-second monotonic limit and relay expiry; progress
+cannot extend either deadline. Connection, handshake, text-only and write
+timeouts remain unchanged. Failed commands are not replayed. This addresses
+the observed early close without claiming to identify the source of the
+underlying network pause.

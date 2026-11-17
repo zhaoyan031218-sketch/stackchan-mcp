@@ -1,53 +1,108 @@
-# recovery-20261117.1 验证记录
+# recovery-20261118.3 验证记录
 
-基线：`1093695f8fa094c5e4fb9c1b35182b598111fb16`。
-在独立云端工作副本完成检查，原工作区源码保留。
+基于 `e2ef3df`（上一版 recovery-20261118.2）；保留传感器 ACK 修复、MiniMax、
+照片分片回传和预编译 USB 配置功能。本次修复日志已确认的 PCM 过早接收超时。
 
-| 检查 | 结果 |
-| --- | --- |
-| `uv run --locked ruff check .` | 通过 |
-| `uv run --locked pyright` | 0 错误、0 警告 |
-| `uv run --locked pytest --cov=mcp_server --cov=scripts --cov-report=term-missing` | 642 项通过；11 条依赖弃用警告 |
-| `uv run --locked pytest tests/test_mcp_server.py -q` | 123 项通过 |
-| `uv run --locked python scripts/ci_security_audit.py` | 通过 |
-| `pio test -d firmware -e native` | 99 项原生固件测试通过 |
-| `pio run -d firmware -e m5stack-cores3-public -j 4` | 编译成功 |
-| `pio run -d firmware -e m5stack-cores3-railway -j 4` | 使用测试配置编译成功 |
-| `pio check -d firmware -e m5stack-cores3-public --severity=high --fail-on-defect=high` | 通过，No defects found |
-| `git diff --check` | 通过 |
+## 已确认的 PCM 断线触发点
 
-Railway 目标的 RAM 静态占用为 103,028 / 327,680 字节（31.4%），
-程序 Flash 占用为 1,480,773 / 6,553,600 字节（22.6%）。这不是运行时剩余内存测量。
+实机日志：元数据在 0 ms 被接受，49,188 字节的帧在 4,713 ms 开始；7,015 ms 时
+仅收到 13,900 字节，库报 `rx_timeout` 并主动关闭 1002。命令仍有效，尚余约
+12.8 秒，未进入音频处理。其直接触发点是原先 2 秒的接收空闲限制。
 
-新增验证覆盖缺少私密配置、未启用出站、缺少主机/证书/token、token 过短、
-错误端口、误用 public 目标，以及构建失败时不得上传磁盘上残留的旧固件。
-继承的集成测试通过真实本地 MCP/WebSocket 服务验证图片字节回传，并用真实
-ffmpeg 验证 MP3 到设备 PCM 的转换；输入设备和付费 TTS 提供商均为测试替身。
+本版对等待音频的命令采用共享的 8 秒空闲计时：从元数据接受时开始，只由实际
+收到的字节刷新，帧头／分片／新一次 readCb 调用不会另起计时。同步接收期间也
+检查服务器截止时间和固件 20 秒总期限，连接、握手、写入和独立文本接收不变。
+失败命令不会自动重放。本次不用修改服务器或重新填写设备凭据。
 
-首次全套 Python 检查中，一项本地服务测试遇到临时端口被占用；单项复查及
-完整重跑均通过。没有以跳过测试或改动云端业务逻辑掩盖该失败。
+实际 WebSockets 2.7.2 接收函数的主机回归测试，先在旧函数复现收到 13,900 字节
+后失败，再验证新函数能在模拟的 3 秒停顿后收齐 49,188 字节。另覆盖 8 秒无进展、
+持续少量流量到 20 秒时停止、最终一次读取跨过截止时间、断线、零字节读取、
+新帧读取不重置共享空闲计时及原有文本超时。测试过的补丁函数与构建依赖源码逐字一致。
 
-## 构建依赖
+## 已通过的检查
 
-使用 PlatformIO 6.1.18、espressif32 7.0.0、Arduino ESP32 2.0.17、
-M5Unified 0.2.15、M5GFX 固定提交 `5268353`、StackChan-BSP 固定提交
-`0addef4`、ArduinoJson 7.4.3、AnimatedGIF 2.2.3、WebSockets 2.7.2。
-`pio pkg list` 还列出安装器拉取的 M5GFX 0.3.0；编译依赖图和编译日志实际
-选用的是直接固定的 M5GFX 0.2.21 源码提交，没有将项目升级到 0.3.0。
-其他解析出的库包括 IRremoteESP8266 2.9.0、M5Unit-NFC 0.1.2、
-M5UnitUnified 0.6.5、M5HAL 0.1.4、M5Utility 0.3.1。
+- Ruff：通过；Pyright：0 errors、0 warnings；项目安全审计通过。
+- 完整 Python 测试：744 passed，14 项依赖弃用警告。
+- PlatformIO native 固件测试：134/134 通过。
+- CoreS3 runtime 编译成功，应用镜像 1,483,856 字节。
+- 高严重级别 cppcheck：No defects found。
+- 分区地址、镜像目标/尺寸、SHA-256、ZIP CRC 和解压后助手验证通过。
+- 包含 22 项 WebSockets 补丁／真实接收函数测试及 5 项固件接收窗口测试。
+- 中间件校验版本及全部锚点后才写依赖文件，支持 .2 补丁升级和重复应用。
+  保持关闭原库调试输出；日志不包含 token、请求正文或音频。
+- --flash-only 保留 runtime NVS；--monitor 有界只读，不发复位/配置命令。
+- 监视器跨串口读取边界和超长行测试通过；没有证据表明它造成日志中间字符缺失。
+- 依赖清单已检查；未升级平台或库版本。
 
-云端原有的 esptool 缓存安装不完整，已从缓存归档恢复，并与 PlatformIO
-注册表的 SHA-256 核对一致。此操作没有更改项目依赖版本，也没有关闭 TLS 校验。
-Railway 编译验证复用相同依赖集，配置仅含示例主机和测试凭据，未烧录到设备。
+前版传感器 ACK 误检测的七项测试仍通过。PCM 首段请求经生产 C++ 解析器的
+真实 loopback HTTP/WebSocket 测试仍覆盖 2、49152、131072 字节。前版实际 staging
+代码的 48 KiB 首段及 1.5 MiB 连续拼接已通过主机 ASan/UBSan 检查；本次未修改它。
 
-## 尚需实机确认
+## 下载包
 
-- Windows 上的证书获取、依赖下载、USB 端口和烧录流程需要在用户电脑执行。
-- 机器人使用真实 Wi-Fi/设备 token/CA 后能否持续连接 Railway。
-- 实际摄像头画面、扬声器声音，以及 Kelivo 是否把图片传给支持图像的模型。
-- Railway 当前部署版本、副本数量和真实 TTS 配置。
+`releases/cores3-recovery-20261118.3.zip`，**959,631 字节**。
 
-此次没有访问真实机器人或付费 TTS，没有更新 Railway。云端联网白名单阻止了
-对用户 Railway 主机的 HTTP 检查，不能由该网络拒绝推断 Railway 服务故障。
-测试配置、测试固件、缓存、日志和私密文件不包含在发布的源码中。
+SHA-256：
+
+```text
+67511302d48d6688c6ade24d186ace40fa3b2acffc688283fb4c4bcc3cf5b52d
+```
+
+旧版 20261118.1 和 .2 的包及校验值保持不变。包不含用户凭据，不需要下载 ESP32 编译器。
+
+## 实机边界
+
+### 用户已完成的实机验证
+
+用户在 `.3` 固件、原有 MiniMax 云端版本不变的情况下，先确认实际听到了语音，
+随后单独调用拍照并报告 Kelivo 能描述现场画面。提供的 COM7 日志显示：
+
+- 语音三段 PCM 分别为 49,152、49,152、33,118 字节，总计 131,422 字节。
+  两个非最终段返回 202，最终段返回 200；出现 `Speaker started` 和
+  `Session complete`，所提供片段中没有断连或超时事件。
+- 三段从元数据接受到完整收齐分别用时 5,317、7,170、3,299 ms。
+  这不是“超过两秒总时长就失败”的规则：旧限制针对连续无接收进展，
+  新规则仍受总命令期限约束。
+- 最终图片回复完整发送 `5049/5049` 字节，分为 5 个 WebSocket 帧，发送用时
+  14 ms。减去 36 字节应用协议头，图片正文为 5,013 字节，与 Kelivo 的
+  `Photo captured (5013 bytes)` 一致。此前另一条二进制回复为 2,485 字节、
+  3 帧；日志本身不含请求路径，不能据此称用户手动拍了两次。
+- `.3` 沿用之前的摄像头引脚和图片发送修复，本轮只调整音频接收等待。
+  不能由这次成功单独确定哪项相机改动是历史视觉故障的唯一原因。
+
+以上为用户执行并提供的实机验收，开发环境未连接其 USB，也没有收到照片原图。
+结果确认本次说话、拍照链路成功；录音、识别、传感器和长期运行仍未验收。
+原 ZIP 及 SHA-256 保持不变，不因补充文档要求重新刷机。
+
+### 仍保留的定位限制
+
+用户随后确认云端 `9f4cad9` 昨天已经能正常说话，换固件后才失败；此前视觉和
+录音没有正常。应保持云端不变，优先查固件回归。云端小分段候选已停止，没有
+代码修改、提交或部署。旧源码里已有 2 秒接收限制，因此本次确认的是当前关闭
+机制，尚未确定相对于昨日实际烧录镜像的完整回归原因。
+
+已确认固件因接收空闲超时提前断开，但不能由该日志定位链路停顿来自代理、无线、
+TLS 记录缓冲还是其他原因。八秒是有界容忍窗口；软件测试不能保证现场链路一定
+在所有场景下均能在原有总期限内完成。本次短句的完整接收和实际发声已由用户确认。
+
+开发环境未直接连接用户 USB 硬件；用户侧语音、照片与 Windows 串口验证见上。
+仅按 GitHub 源码工作，没有访问 Railway。服务器端 sense 的错误显示改进保存在
+恢复分支，需部署才会生效；固件 ACK 检测修复和本次 PCM 接收修复可独立生效。
+未假定用户有或没有外接 ENV 模块，也未生成虚构的传感器读数。
+
+## 复核命令与本次日志
+
+```sh
+python -m ruff check .
+python -m pyright
+python -m pytest --cov=mcp_server --cov=scripts --cov-report=term-missing
+python scripts/ci_security_audit.py
+pio test -d firmware -e native
+pio run -d firmware -e m5stack-cores3-runtime
+pio check -d firmware -e m5stack-cores3-runtime --severity=high --fail-on-defect=high
+pio pkg list -d firmware -e m5stack-cores3-runtime
+```
+
+使用配置好依赖的 Python／PlatformIO 环境；本次日志保存在工作区的
+`work/python-tests-20261118.3.log`、`work/native-tests-20261118.3.log`、
+`work/runtime-build-20261118.3.log`、`work/firmware-check-20261118.3.log`。

@@ -1,7 +1,7 @@
 #ifndef STACKCHAN_CONFIG_LOADER_H
 #define STACKCHAN_CONFIG_LOADER_H
 
-#if defined(STACKCHAN_REQUIRE_OUTBOUND_CONFIG)
+#if defined(STACKCHAN_REQUIRE_OUTBOUND_CONFIG) && !defined(STACKCHAN_RUNTIME_CONFIG)
 #if defined(STACKCHAN_USE_PUBLIC_CONFIG)
 #error "Railway firmware cannot use the public rehearsal configuration"
 #elif !__has_include("config.h")
@@ -9,7 +9,7 @@
 #endif
 #endif
 
-#if defined(STACKCHAN_USE_PUBLIC_CONFIG)
+#if defined(STACKCHAN_RUNTIME_CONFIG) || defined(STACKCHAN_USE_PUBLIC_CONFIG)
 #include "../config.h.example"
 #elif __has_include("config.h")
 #include "config.h"
@@ -17,7 +17,19 @@
 
 #include "config_defaults.h"
 
-#if defined(STACKCHAN_REQUIRE_OUTBOUND_CONFIG)
+#if defined(STACKCHAN_RUNTIME_CONFIG)
+#include "runtime_config.h"
+#undef STACKCHAN_OUTBOUND_ENABLED
+#undef STACKCHAN_OUTBOUND_HOST
+#undef STACKCHAN_OUTBOUND_PORT
+#undef STACKCHAN_OUTBOUND_DEVICE_TOKEN
+#undef STACKCHAN_OUTBOUND_CA_PEM
+#define STACKCHAN_OUTBOUND_ENABLED 1
+#define STACKCHAN_OUTBOUND_HOST runtimeCloudHost()
+#define STACKCHAN_OUTBOUND_PORT 443
+#define STACKCHAN_OUTBOUND_DEVICE_TOKEN runtimeCloudToken()
+#define STACKCHAN_OUTBOUND_CA_PEM runtimeCloudCa()
+#elif defined(STACKCHAN_REQUIRE_OUTBOUND_CONFIG)
 static_assert(STACKCHAN_OUTBOUND_ENABLED == 1,
               "Railway firmware requires outbound enabled");
 static_assert(sizeof(STACKCHAN_OUTBOUND_HOST) > 1,

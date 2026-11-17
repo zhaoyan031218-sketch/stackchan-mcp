@@ -1,11 +1,14 @@
 """Use a real loopback WebSocket, never hardware or a production listener."""
 
 import json
+import shutil
 import socket
+import subprocess
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from pathlib import Path
 
 import httpx
 import pytest
@@ -19,6 +22,24 @@ from mcp_server.stackchan_client import StackchanClient, post_pcm_stream
 DEVICE_TOKEN = "wire-device-0123456789abcdef"
 CONTROL_TOKEN = "wire-control-0123456789abcdef"
 CONTROL_HEADERS = {"Authorization": f"Bearer {CONTROL_TOKEN}"}
+
+
+@pytest.fixture(scope="module")
+def firmware_pcm_receiver(tmp_path_factory):
+    root = Path(__file__).resolve().parents[1]
+    compiler = shutil.which("g++")
+    json_headers = root / "firmware/.pio/libdeps/native/ArduinoJson/src"
+    if not compiler or not (json_headers / "ArduinoJson.h").is_file():
+        pytest.skip("firmware request contract test requires g++ and native PlatformIO dependencies")
+    executable = tmp_path_factory.mktemp("pcm-receiver") / "receiver"
+    subprocess.run(  # noqa: S603 - fixed repository C++ fixture and parser, no shell.
+        [compiler, "-std=c++17", "-Wall", "-Wextra", "-Werror",
+         "-I", str(root / "firmware/src"), "-I", str(json_headers),
+         str(root / "tests/fixtures/outbound_pcm_receiver.cpp"),
+         str(root / "firmware/src/outbound_protocol.cpp"), "-o", str(executable)],
+        check=True, capture_output=True, timeout=30,
+    )
+    return executable
 
 
 @pytest.fixture
@@ -133,6 +154,37 @@ def test_mcp_client_through_real_relay(wire_server, monkeypatch, tmp_path):
                                 "body": {"success": True, "staged": seq == 0}}))
         assert future.result(timeout=3)["success"]
         assert bytes(received) == pcm
+
+
+@pytest.mark.parametrize("pcm_size", [2, 48 * 1024, 128 * 1024])
+def test_first_staged_segment_matches_firmware_parser(wire_server, firmware_pcm_receiver, pcm_size):
+    base, url = wire_server
+    with (
+        connect(url, additional_headers={"Authorization": f"Bearer {DEVICE_TOKEN}"}) as ws,
+        httpx.Client(base_url=base, headers=CONTROL_HEADERS, timeout=4) as http,
+        ThreadPoolExecutor() as pool,
+    ):
+        ws.send(json.dumps({"type": "hello", "v": 1}))
+        assert ws.ping().wait(timeout=2)
+        future = pool.submit(http.post, "/device/play/pcm",
+                             params={"session": "0123456789abcdef0123456789abcdef",
+                                     "seq": 0, "final": 0, "mode": "staged"},
+                             content=b"\x01\x00" * (pcm_size // 2),
+                             headers={"Content-Type": "audio/x-raw"})
+        metadata = ws.recv(timeout=2)
+        binary = ws.recv(timeout=2)
+        assert isinstance(metadata, str)
+        assert isinstance(binary, bytes)
+        parsed = subprocess.run(  # noqa: S603 - fixed locally compiled firmware parser fixture.
+            [str(firmware_pcm_receiver)], input=metadata.encode() + b"\n" + binary,
+            capture_output=True, check=True, timeout=1,
+        )
+        assert parsed.stdout == f"{pcm_size}\n".encode()
+        request = json.loads(metadata)
+        ws.send(json.dumps({"id": request["id"], "status": 200,
+                            "body": {"success": True, "staged": True}}))
+        assert future.result(timeout=3).json() == {"success": True, "staged": True}
+        assert http.get("/relay/status").json()["online"] is True
 
 
 def test_real_channel_booth_priority_and_disconnected_waiter(wire_server):

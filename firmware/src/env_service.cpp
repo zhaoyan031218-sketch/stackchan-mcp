@@ -1,13 +1,12 @@
 #include "env_service.h"
 #include <Arduino.h>
-#include <Wire.h>
 #include <M5Unified.h>
+#include <math.h>
 
 // ── I2C bus ──────────────────────────────────────────────────────────────────
-// CoreS3 internal I2C: SDA=12, SCL=11 (shared with GC0308 SCCB and other
-// onboard peripherals). M5Unified drives this bus as In_I2C; we re-use it
-// here via the global Wire instance that M5StackChan.begin() already
-// initialised at 400 kHz.
+// Optional ENV sensors are on CoreS3 Port A: SDA=2, SCL=1. Use M5.Ex_I2C
+// at 100 kHz. The camera and onboard peripherals use the separate internal
+// bus; this service does not initialize or take over Arduino Wire/Wire1.
 //
 // Library choice: direct I2C reads, no external library.
 // Rationale: the project has no M5Unit-ENV dependency and every other
@@ -30,16 +29,12 @@ static bool    s_qmpFound     = false;
 static uint8_t s_sht31Addr   = 0;
 static uint8_t s_qmpAddr     = 0;
 static bool    s_usingPortA  = false;   // true = 外部Port A (G1/G2), false = 内部总线
+static bool    s_busReady = false;
 
 // CoreS3 Port A (Grove红口 / 排针引出) 的 I2C 引脚
 // 2026/7/29 实测：CoreS3 的 Port A 是 G2=SDA、G1=SCL（跟直觉相反）。
 // 穷举扫描的证据：G1/G2 那组一个都扫不到，反过来才看到 0x44 + 0x70。
-static constexpr int PORTA_SDA = 2;
-static constexpr int PORTA_SCL = 1;
-
-// 当前使用的总线。内部总线是 M5Unified 已经初始化好的 Wire；
-// Port A 用第二个 I2C 外设 Wire1 —— 不去 end/re-begin M5 占着的 Wire，
-// 否则会在启动时挂死（2026/7/29 实测：Wire.end() 后板子卡在扫描不动）。
+// M5Unified owns Port A through Ex_I2C. Do not create a second Wire driver.
 static constexpr uint32_t I2C_FREQ = 100000;   // Grove 线偏长，100kHz 稳
 static char s_lastError[64] = "";   // 最后一次读取失败的原因，走 HTTP 暴露（串口在启动后会哑）
 
@@ -60,19 +55,21 @@ static uint32_t s_dbgRawP = 0, s_dbgRawT = 0;
 // ── I2C probe ────────────────────────────────────────────────────────────────
 // Returns true when a device ACKs at the given address.
 static bool i2cProbe(uint8_t addr) {
-    bool ok = M5.Ex_I2C.start(addr, false, I2C_FREQ);
-    M5.Ex_I2C.stop();
-    return ok;
+    // start() only launches the address transaction. scanID() also waits for
+    // stop(), which reports a delayed NACK; ignoring it invents absent sensors.
+    return M5.Ex_I2C.scanID(addr, I2C_FREQ);
 }
 
 // ── SHT31 helpers ────────────────────────────────────────────────────────────
 // Issue a soft-reset so the sensor starts from a known state.
-static void sht31SoftReset(uint8_t addr) {
+static bool sht31SoftReset(uint8_t addr) {
     const uint8_t cmd[2] = { 0x30, 0xA2 };
-    M5.Ex_I2C.start(addr, false, I2C_FREQ);
-    M5.Ex_I2C.write(cmd, 2);
-    M5.Ex_I2C.stop();
+    if (!M5.Ex_I2C.start(addr, false, I2C_FREQ)) return false;
+    const bool written = M5.Ex_I2C.write(cmd, 2);
+    const bool stopped = M5.Ex_I2C.stop();
+    if (!written || !stopped) return false;
     delay(15);
+    return true;
 }
 
 // Read temperature (°C) and relative humidity (%) from SHT31.
@@ -260,6 +257,7 @@ static bool qmpInit(uint8_t addr) {
         // 读气压时卡死整台设备（实测 /env 请求打不通）。宁可不要这颗，
         // 也不能让它拖垮温湿度和整个 HTTP 服务。
         Serial.printf("[ENV] QMP6988 @ 0x%02X: chip ID 0x%02X (expected 0x5C) — 放弃这颗\n", addr, id);
+        snprintf(s_lastError, sizeof(s_lastError), "QMP6988 ID mismatch");
         return false;
     }
 
@@ -270,7 +268,11 @@ static bool qmpInit(uint8_t addr) {
     // Standby mode while loading calibration
     qmpWriteReg(addr, QMP_REG_CTRL_MEAS, 0x00);
 
-    return qmpLoadCalibration(addr);
+    if (!qmpLoadCalibration(addr)) {
+        snprintf(s_lastError, sizeof(s_lastError), "QMP6988 calibration failed");
+        return false;
+    }
+    return true;
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -278,32 +280,27 @@ static bool qmpInit(uint8_t addr) {
 static bool scanCurrentBus();
 
 bool initEnvService() {
-    // 传感器可能挂在两条总线之一：
-    //   a) 内部总线 (SDA=12 SCL=11) —— M5StackChan.begin() 已经初始化好
-    //   b) 外部 Port A (G1/G2) —— Grove 红口或底部排针引出
-    // 先扫内部，找不到就切到 Port A 再扫一遍。这样不管接哪边都能用。
+    s_sht31Found = s_qmpFound = s_qmpCalOk = false;
+    s_sht31Addr = s_qmpAddr = 0;
+    s_usingPortA = false;
+    s_lastError[0] = '\0';
     Serial.println("[ENV] Scanning Port A (G1/G2) for environment sensors...");
 
-    // 只扫 Port A (G1/G2)，用第二个 I2C 外设 Wire1。
-    //
-    // 为什么不扫内部总线（SDA=12 SCL=11）：M5Unified 用自己的驱动
-    // (M5.In_I2C) 占着那条总线，Arduino 的 Wire 对象从未被 begin 过——
-    // 直接调用 Wire.beginTransmission() 会死等，把整个启动卡住。
-    // 2026/7/29 实测两次烧录都停在扫描那一行不动。
-    // 传感器接在排针/Grove红口上，本来就是 Port A，没必要碰内部总线。
-    // 100kHz 不是 400kHz：实测穷举扫描在 100kHz 下能稳定看到 0x44/0x70，
-    // 400kHz 下检测不到——Grove 排线偏长，上拉电阻扛不住高速。
-    // 用 M5Unified 自己的外部 I2C（Port A）。
-    // 不能用 Arduino 的 Wire/Wire1：Wire 被 M5Unified 内部总线占着，
-    // Wire1 跟摄像头的 SCCB 抢同一个 I2C 外设（实测报
-    // "i2c driver install error" 后卡死）。Ex_I2C 是库自己管的，不打架。
-    M5.Ex_I2C.begin();
+    // Use the board's external bus mapping; never take over the internal
+    // camera/touch bus or instantiate an independent Arduino Wire driver.
+    s_busReady = M5.Ex_I2C.begin();
+    if (!s_busReady) {
+        snprintf(s_lastError, sizeof(s_lastError), "Port A bus init failed");
+        Serial.println("[ENV] Port A bus initialization failed");
+        return false;
+    }
     delay(10);
 
     if (scanCurrentBus()) {
         s_usingPortA = true;
-        Serial.println("[ENV] Sensors on Port A (Wire1).");
+        Serial.println("[ENV] Sensors on Port A (M5.Ex_I2C).");
     } else {
+        if (!s_lastError[0]) snprintf(s_lastError, sizeof(s_lastError), "no sensor ACK on Port A");
         Serial.println("[ENV] No environment sensors detected on Port A.");
         return false;
     }
@@ -324,9 +321,12 @@ static bool scanCurrentBus() {
     const uint8_t sht31Candidates[] = { SHT31_ADDR_PRIMARY, SHT31_ADDR_ALTERNATE };
     for (uint8_t candidate : sht31Candidates) {
         if (i2cProbe(candidate)) {
+            if (!sht31SoftReset(candidate)) {
+                snprintf(s_lastError, sizeof(s_lastError), "SHT31 reset failed");
+                continue;
+            }
             s_sht31Addr  = candidate;
             s_sht31Found = true;
-            sht31SoftReset(candidate);
             Serial.printf("[ENV] SHT31 found @ 0x%02X\n", candidate);
             break;
         }
@@ -343,8 +343,8 @@ static bool scanCurrentBus() {
                 s_qmpAddr  = 0;
             } else {
                 Serial.printf("[ENV] QMP6988 found @ 0x%02X\n", candidate);
+                break;
             }
-            break;
         }
     }
 
@@ -355,19 +355,21 @@ bool isEnvAvailable() {
     return s_sht31Found || s_qmpFound;
 }
 
+EnvRuntimeStatus getEnvRuntimeStatus() {
+    return {s_busReady, s_sht31Found, s_qmpFound, s_sht31Addr, s_qmpAddr};
+}
+
 
 bool readEnv(float& temperature, float& humidity, float& pressure) {
-    if (!s_sht31Found && !s_qmpFound) return false;
-
     temperature = NAN;
     humidity    = NAN;
     pressure    = NAN;
+    if (!s_sht31Found && !s_qmpFound) return false;
+    s_lastError[0] = '\0';
 
     if (s_sht31Found) {
         float t = NAN, h = NAN;
-        // 注意：不要在这里重建总线。Wire1.end() 在 HTTP 处理线程里会
-        // 把整个 server 卡死（2026/7/29 实测：ping 通但所有请求超时）。
-        // 正确做法是在 setup() 里让 initEnvService() 最后跑，见 main.cpp。
+        // Keep bus initialization in setup, not inside a command handler.
         bool ok = sht31Read(s_sht31Addr, t, h);
         if (ok) {
             temperature = t;
@@ -385,6 +387,7 @@ bool readEnv(float& temperature, float& humidity, float& pressure) {
             if (!s_sht31Found) temperature = tQmp;
         } else {
             Serial.println("[ENV] QMP6988 read failed");
+            snprintf(s_lastError, sizeof(s_lastError), "QMP6988 read failed");
         }
     }
 

@@ -5,7 +5,7 @@
 /**
  * Stack-chan Environment Sensor Service
  * Supports SHT31 (temp/humidity) and QMP6988 (barometric pressure)
- * Wired via pin headers to the CoreS3 internal I2C bus (SDA=12, SCL=11)
+ * Optional external module on CoreS3 Port A (SDA=2, SCL=1).
  *
  * Auto-detects sensors at startup via I2C bus scan.
  * Partial availability is fine — NAN is reported for any missing sensor.
@@ -25,6 +25,16 @@ String envDebugJson();
 
 // Returns true if at least one sensor was detected during initEnvService().
 bool isEnvAvailable();
+
+struct EnvRuntimeStatus {
+    bool busReady;
+    bool sht31Detected;
+    bool qmp6988Detected;
+    uint8_t sht31Address;
+    uint8_t qmp6988Address;
+};
+
+EnvRuntimeStatus getEnvRuntimeStatus();
 
 // 最后一次读取失败的原因，空字符串表示没有错误
 const char* envLastError();

@@ -11,7 +11,7 @@
 // From M5CoreS3 library (GC0308.cpp)
 #define CAM_PIN_PWDN    -1
 #define CAM_PIN_RESET   -1
-#define CAM_PIN_XCLK     2   // GPIO 2 generates XCLK for GC0308
+#define CAM_PIN_XCLK    -1   // CoreS3 supplies the camera clock; GPIO 2 is external I2C SDA
 #define CAM_PIN_SIOD    12   // I2C SDA (shared with system I2C)
 #define CAM_PIN_SIOC    11   // I2C SCL (shared with system I2C)
 #define CAM_PIN_D0      39
