@@ -13,6 +13,7 @@ from .audio_publish import publish_wav
 from .audio_server import AUDIO_DIR, audio_url, start_audio_server
 from .face_tracking import signal_face_tracking
 from .listening import capture_ready_recording, format_listen_result
+from .relay_errors import RELAY_ERRORS
 from .stackchan_client import (
     PcmPlaybackError,
     StackchanClient,
@@ -126,6 +127,59 @@ def format_device_request_error(exc: requests.RequestException) -> str:
     if isinstance(exc, requests.ConnectionError):
         return "Stack-chan is unreachable from MCP right now (connection failed). Availability unconfirmed."
     return f"Device request failed: {exc}"
+
+
+def format_sensor_failure(data: object) -> str | None:
+    """Translate only fixed firmware diagnostics, never arbitrary response text."""
+    if not isinstance(data, dict) or data.get("success") is not False:
+        return None
+    errors = {
+        "no env sensor detected": "No environment sensor detected on the device",
+        "sensor read failed": "Environment sensor read failed",
+        "env bus unavailable": "Environment sensor bus unavailable",
+    }
+    error = data.get("error")
+    message = errors.get(error) if isinstance(error, str) else None
+    if message is None:
+        return None
+    details = {
+        "cmd write failed": "cmd write failed",
+        "read failed": "read failed",
+        "CRC mismatch": "CRC mismatch",
+        "bus init failed": "Port A bus init failed",
+        "Port A bus init failed": "Port A bus init failed",
+        "no sensor ACK on Port A": "no sensor ACK on Port A",
+        "SHT31 reset failed": "SHT31 reset failed",
+        "QMP6988 ID mismatch": "QMP6988 ID mismatch",
+        "QMP6988 calibration failed": "QMP6988 calibration failed",
+        "QMP6988 read failed": "QMP6988 read failed",
+    }
+    detail = data.get("detail")
+    safe_detail = details.get(detail) if isinstance(detail, str) else None
+    if error == "no env sensor detected" and safe_detail == "Port A bus init failed":
+        message = "Environment sensor bus unavailable"
+    return message + (f": {safe_detail}." if safe_detail else ".")
+
+
+def format_sensor_request_error(exc: requests.RequestException) -> str:
+    if not isinstance(exc, requests.HTTPError):
+        return format_device_request_error(exc)
+    response = exc.response
+    if response is None:
+        return "Environment sensor HTTP request failed; details unavailable."
+    status = response.status_code
+    prefix = f"HTTP {status}: " if type(status) is int and 100 <= status <= 599 else "HTTP error: "
+    data = None
+    if len(response.content) <= 8192:
+        try:
+            data = response.json()
+        except (ValueError, UnicodeError):
+            data = None
+    message = format_sensor_failure(data)
+    if message is None and isinstance(data, dict):
+        code = data.get("error_code")
+        message = RELAY_ERRORS.get(code) if isinstance(code, str) else None
+    return prefix + (message or "Environment sensor request failed; no recognized device details.")
 
 
 def build_health_report(client: Any, config: StackchanConfig) -> dict[str, object]:
@@ -623,6 +677,9 @@ def register_tools(mcp, client: Any, config: StackchanConfig, image_cls):
         audit_tool_call("stackchan_sense")
         try:
             data = client.read_env()
+            failure = format_sensor_failure(data)
+            if failure:
+                return f"⚠️ {failure}"
             parts = []
             temp = data.get("temperature")
             if temp is not None:
@@ -649,7 +706,7 @@ def register_tools(mcp, client: Any, config: StackchanConfig, image_cls):
                 return "⚠️ No sensor data available"
             return "  ".join(parts)
         except requests.RequestException as exc:
-            return format_device_request_error(exc)
+            return format_sensor_request_error(exc)
         except Exception as exc:
             return f"❌ Error: {exc}"
 

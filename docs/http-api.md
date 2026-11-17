@@ -98,12 +98,21 @@ This is the shared contract between the CoreS3 firmware and the MCP server.
 ## Diagnostics
 
 - `GET /env`
-  - Returns temperature, humidity, and barometric pressure when available.
+  - Returns temperature, humidity, and barometric pressure from optional
+    SHT31/QMP6988 sensors on Port A (SDA 2, SCL 1) when available.
   - Success shape:
-    `{"success":true,"temperature":24.3,"humidity":58.2,"pressure":1013.2,"sensors":{"sht31":true,"qmp6988":true}}`
+    `{"success":true,"bus":"port_a","bus_ready":true,"detected":{"sht31":true,"qmp6988":true},"temperature":24.3,"humidity":58.2,"pressure":1013.2,"sensors":{"sht31":true,"qmp6988":true}}`
   - Missing sensors or unavailable readings are returned as `null`.
-  - If no ENV sensor is detected, returns:
-    `{"success":false,"error":"no env sensor detected"}`.
+  - All replies include `bus`, `bus_ready`, and `detected` setup diagnostics.
+    `sensors` in successful replies means a valid current reading, whereas
+    `detected` means the corresponding sensor passed startup detection.
+  - If no ENV sensor is detected, HTTP 200 returns `success:false`,
+    `error:"no env sensor detected"`, and a fixed `detail` explaining the probe.
+    This does not prove whether a module is physically connected.
+  - Bus initialization failure returns HTTP 500 with `error:"env bus unavailable"`
+    and `detail:"Port A bus init failed"`. A detected sensor whose read fails
+    returns HTTP 500 with `error:"sensor read failed"` and a fixed `detail`.
+    Relay HTTP 503 means the device channel is unavailable, not a sensor reading.
 
 - `GET /env/debug`
   - Returns raw environmental sensor diagnostics used to validate QMP6988

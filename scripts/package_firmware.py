@@ -73,6 +73,19 @@ def instructions(profile: str) -> str:
     if profile == "runtime-configurable":
         setup = """
 Windows 使用方法（Python 3.11 或更新版本）：
+已经配好 Wi-Fi／Railway、只升级固件时，在新解压目录打开终端运行：
+  .\\START-SETUP.cmd --flash-only --port COM5
+将 COM5 换成实际端口。此模式验证文件后只烧录，保留 sc-cloud 配置，不读取证书或重新询问密码／令牌。
+仅适用于已有兼容分区的本项目固件；从未配置过的设备刷完会等待 USB 设置。
+不要为了升级执行 --configure-only，也不要勾选全片擦除。
+
+需要观察掉线／播放问题时，另开一次命令（不刷机、不重置、不改设置）：
+  .\\.venv\\Scripts\\python.exe scripts\\setup_prebuilt.py --monitor --port COM5
+监视默认 90 秒后自动结束。开始后在 Kelivo 触发一次短句播放；需要开机日志时可自行按设备 Reset。
+只显示 BOOT／OUTBOUND／PCM／ENV 和已知 ESP 错误、重启、回溯信息；过滤配置 JSON、Wi-Fi 和网址。
+日志只在终端显示，不保存文件。复制这些日志用于排查；看见“烧录成功”不代表语音问题已修复。
+
+首次配置或确实需要更改设置时：
 1. 完整解压 ZIP 到新文件夹，把 CoreS3 用可传数据的 USB 线接电脑。
 2. 双击 START-SETUP.cmd。首次只安装固定版本 esptool/pyserial 等小型 USB 工具，不下载编译器。
 3. 选择 CoreS3 的实际 COM 端口，输入 2.4GHz Wi-Fi 名称、密码及 Railway 的 STACKCHAN_RELAY_DEVICE_TOKEN。

@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_system.h>
 
 #include <M5Unified.h>
 #include <M5StackChan.h>
@@ -35,7 +36,9 @@ void setup() {
         for (;;) delay(1000);
     }
 #endif
-    Serial.println("\n[BOOT] Stack-chan recovery-20261118.1");
+    Serial.println("\n[BOOT] Stack-chan recovery-20261118.2");
+    Serial.printf("[BOOT] reset_reason=%d heap=%u psram=%u\n",
+                  static_cast<int>(esp_reset_reason()), ESP.getFreeHeap(), ESP.getFreePsram());
 #if defined(STACKCHAN_RUNTIME_CONFIG)
     const bool runtimeConfigured = runtimeConfigBootWindow();
 #elif defined(STACKCHAN_REQUIRE_OUTBOUND_CONFIG)

@@ -5,12 +5,15 @@
 #include <stdlib.h>
 #include <string.h>
 #include <string>
+#include <math.h>
+#include <stdio.h>
 
 using std::min;
 
 class String {
 public:
     String(const char* text = "") : text_(text) {}
+    explicit String(uint32_t value) : text_(std::to_string(value)) {}
     size_t length() const { return text_.size(); }
     bool isEmpty() const { return text_.empty(); }
     const char* c_str() const { return text_.c_str(); }
@@ -19,6 +22,8 @@ public:
     }
     bool operator==(const String& other) const { return text_ == other.text_; }
     bool operator!=(const String& other) const { return !(*this == other); }
+    String& operator+=(const String& other) { text_ += other.text_; return *this; }
+    friend String operator+(String left, const String& right) { return left += right; }
 private:
     std::string text_;
 };

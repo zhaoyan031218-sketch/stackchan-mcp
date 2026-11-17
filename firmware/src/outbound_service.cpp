@@ -4,6 +4,7 @@
 #include <WebSocketsClient.h>
 #include <WiFi.h>
 #include <atomic>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 #include <mbedtls/x509_crt.h>
 #include <sys/time.h>
@@ -11,6 +12,7 @@
 
 #include "config_loader.h"
 #include "firmware_command.h"
+#include "outbound_diagnostics.h"
 #include "outbound_ws_writer.h"
 #include "playback_service.h"
 
@@ -52,9 +54,33 @@ static int64_t utcNowMs() {
     return static_cast<int64_t>(now.tv_sec) * 1000 + now.tv_usec / 1000;
 }
 
+static outbound::CommandValidity commandValidity() {
+    return outbound::classifyCommand(connected.load(), command.generation,
+        generation.load(), millis(), command.startedMs, utcNowMs(), command.info.expiresAtMs);
+}
+
 static bool currentCommand() {
-    return connected.load() && outbound::commandIsCurrent(
-        command.generation, generation.load(), millis(), command.startedMs, utcNowMs(), command.info.expiresAtMs);
+    return commandValidity() == outbound::CommandValidity::CURRENT;
+}
+
+static void logTransportEvent(const char* event, uint16_t code = 0, size_t expected = 0,
+                              size_t received = 0, const char* task = "network") {
+    const Phase state = phase.load();
+    const bool active = state != Phase::IDLE;
+    const uint32_t age = active ? millis() - command.startedMs : 0;
+    const int64_t deadlineRemaining = active ? command.info.expiresAtMs - utcNowMs() : 0;
+    // Callers supply constant labels and numbers only. WebSockets debug remains
+    // disabled because its HTTP/header and payload logging exposes credentials.
+    Serial.printf("[OUTBOUND] event=%s code=%u phase=%u expected=%u received=%u "
+                  "age_ms=%u deadline_left_ms=%lld validity=%s heap=%u psram=%u "
+                  "largest_internal=%u largest_psram=%u stack_min=%u task=%s\n",
+                  event, (unsigned)code, (unsigned)state, (unsigned)expected,
+                  (unsigned)received, (unsigned)age, (long long)deadlineRemaining,
+                  active ? outbound::commandValidityLabel(commandValidity()) : "idle",
+                  ESP.getFreeHeap(), ESP.getFreePsram(),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT),
+                  (unsigned)uxTaskGetStackHighWaterMark(nullptr), task);
 }
 
 static void invalidateConnection() {
@@ -62,7 +88,8 @@ static void invalidateConnection() {
     fragments.clear();
 }
 
-static void closeConnection() {
+static void closeConnection(const char* reason, size_t expected = 0, size_t received = 0) {
+    logTransportEvent(reason, 0, expected, received);
     invalidateConnection();
     socket.disconnect();
 }
@@ -77,32 +104,42 @@ static void releaseSlot() {
 
 static void receiveText(const uint8_t* data, size_t size) {
     if (phase.load() != Phase::IDLE) {
-        closeConnection();
+        closeConnection("text_wrong_phase", 0, size);
         return;
     }
     command.clear();
     if (!outbound::parseRequest(data, size, command.request, command.info)) {
-        closeConnection();
+        closeConnection("text_invalid_envelope", 0, size);
         return;
     }
     command.generation = generation.load();
     command.startedMs = millis();
     phase.store(command.info.binarySize ? Phase::RECEIVING : Phase::QUEUED);
+    logTransportEvent("rx_envelope", 0, command.info.binarySize, size);
 }
 
 static void receiveBinary(const uint8_t* data, size_t size) {
-    if (phase.load() != Phase::RECEIVING || !currentCommand() ||
-        !outbound::validBinary(data, size, command.info)) {
-        closeConnection();
+    const size_t expected = command.info.binarySize + outbound::BINARY_HEADER_BYTES;
+    if (phase.load() != Phase::RECEIVING) {
+        closeConnection("binary_wrong_phase", expected, size);
+        return;
+    }
+    if (!currentCommand()) {
+        closeConnection("binary_not_current", expected, size);
+        return;
+    }
+    if (!outbound::validBinary(data, size, command.info)) {
+        closeConnection("binary_invalid_envelope", expected, size);
         return;
     }
     command.pcmData = static_cast<uint8_t*>(ps_malloc(command.info.binarySize));
     if (!command.pcmData) {
-        closeConnection();
+        closeConnection("binary_allocation_failed", command.info.binarySize, 0);
         return;
     }
     memcpy(command.pcmData, data + outbound::BINARY_HEADER_BYTES, command.info.binarySize);
     phase.store(Phase::QUEUED);
+    logTransportEvent("rx_binary_accepted", 0, expected, size);
 }
 
 static void receiveMessage(bool binary, const uint8_t* data, size_t size) {
@@ -117,36 +154,39 @@ static void onSocketEvent(WStype_t type, uint8_t* data, size_t size) {
             generation.fetch_add(1);
             connected.store(true);
             lastHeartbeatMs = millis();
-            if (!socket.sendTXT("{\"type\":\"hello\",\"v\":1}")) closeConnection();
+            if (!socket.sendTXT("{\"type\":\"hello\",\"v\":1}")) closeConnection("hello_write_failed");
             break;
         case WStype_DISCONNECTED:
-            Serial.println("[OUTBOUND] Channel disconnected");
+            logTransportEvent("channel_disconnected");
             invalidateConnection();
             break;
         case WStype_TEXT:
         case WStype_BIN:
-            if (fragments.active()) closeConnection();
+            if (fragments.active()) closeConnection("message_during_fragment", 0, size);
             else receiveMessage(type == WStype_BIN, data, size);
             break;
         case WStype_FRAGMENT_TEXT_START:
         case WStype_FRAGMENT_BIN_START:
             fragmentStartedMs = millis();
-            if (!fragments.begin(type == WStype_FRAGMENT_BIN_START) || !fragments.append(data, size)) {
-                closeConnection();
+            if (fragments.active()) {
+                closeConnection("fragment_already_active", 0, size);
+            } else if (!fragments.begin(type == WStype_FRAGMENT_BIN_START)) {
+                closeConnection("fragment_allocation_failed", 0, size);
+            } else if (!fragments.append(data, size)) {
+                closeConnection("fragment_invalid_start", 0, size);
             }
             break;
         case WStype_FRAGMENT:
         case WStype_FRAGMENT_FIN:
             if (!fragments.append(data, size)) {
-                closeConnection();
+                closeConnection("fragment_invalid_append", 0, size);
             } else if (type == WStype_FRAGMENT_FIN) {
                 receiveMessage(fragments.binary(), fragments.data(), fragments.size());
                 fragments.clear();
             }
             break;
         case WStype_ERROR:
-            Serial.println("[OUTBOUND] WebSocket error");
-            closeConnection();
+            closeConnection("websocket_error");
             break;
         default:
             break;
@@ -155,7 +195,7 @@ static void onSocketEvent(WStype_t type, uint8_t* data, size_t size) {
 
 static bool sendResponse() {
     if (!currentCommand()) {
-        Serial.println("[OUTBOUND] Reply expired before metadata");
+        logTransportEvent("reply_not_current");
         return false;
     }
     JsonDocument response;
@@ -174,11 +214,14 @@ static bool sendResponse() {
             response["body"] = body;
         }
     }
-    if (response.overflowed() || measureJson(response) > outbound::MAX_TEXT_BYTES) return false;
+    if (response.overflowed() || measureJson(response) > outbound::MAX_TEXT_BYTES) {
+        logTransportEvent("reply_metadata_invalid_size");
+        return false;
+    }
     String text;
     serializeJson(response, text);
     if (!currentCommand() || !socket.sendTXT(text)) {
-        Serial.println("[OUTBOUND] Reply metadata send failed or expired");
+        logTransportEvent("reply_metadata_write_failed");
         return false;
     }
     if (!command.binaryFrame) return true;
@@ -217,7 +260,9 @@ static void outboundNetworkTask(void*) {
         // the main loop owns RUNNING, including during a connection timeout.
         Phase state = phase.load();
         if (state == Phase::READY) {
-            if (connected.load() && command.generation == generation.load() && !sendResponse()) closeConnection();
+            if (connected.load() && command.generation == generation.load() && !sendResponse()) {
+                closeConnection("reply_failed");
+            }
             releaseSlot();
         } else if (state == Phase::RECEIVING && !connected.load()) {
             releaseSlot();
@@ -225,7 +270,7 @@ static void outboundNetworkTask(void*) {
 
         const bool wifiReady = WiFi.status() == WL_CONNECTED;
         if (!wifiReady) {
-            if (connected.load()) closeConnection();
+            if (connected.load()) closeConnection("wifi_disconnected");
         } else {
             if (!timeRequested) {
                 configTime(0, 0, STACKCHAN_OUTBOUND_NTP_SERVER);
@@ -260,16 +305,16 @@ static void outboundNetworkTask(void*) {
         if (connected.load()) {
             const uint32_t now = millis();
             if (state != Phase::IDLE && !currentCommand()) {
-                closeConnection();
+                closeConnection("command_not_current");
             } else if (state == Phase::RECEIVING && outbound::deadlineExpired(
                            now, command.startedMs, outbound::BINARY_TIMEOUT_MS)) {
-                closeConnection();
+                closeConnection("binary_wait_timeout", command.info.binarySize, 0);
             } else if (fragments.active() && outbound::deadlineExpired(
                            now, fragmentStartedMs, outbound::BINARY_TIMEOUT_MS)) {
-                closeConnection();
+                closeConnection("fragment_wait_timeout", 0, fragments.size());
             } else if (outbound::deadlineExpired(now, lastHeartbeatMs, outbound::HEARTBEAT_MS)) {
                 lastHeartbeatMs = now;
-                if (!socket.sendTXT("{\"type\":\"heartbeat\"}")) closeConnection();
+                if (!socket.sendTXT("{\"type\":\"heartbeat\"}")) closeConnection("heartbeat_write_failed");
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
@@ -277,6 +322,13 @@ static void outboundNetworkTask(void*) {
 }
 
 }  // namespace
+
+// Called only by the version-checked local WebSockets middleware patch. Its
+// event labels are literals; code/length values never contain message content.
+void stackchanWebSocketDiagnostic(const char* event, uint16_t code,
+                                 size_t expected, size_t received) {
+    logTransportEvent(event, code, expected, received);
+}
 
 void initOutboundService() {
     if (networkTask) return;
@@ -308,8 +360,12 @@ void serviceOutboundCommands() {
     clearStaleOutboundPcm();
     Phase expected = Phase::QUEUED;
     if (!phase.compare_exchange_strong(expected, Phase::RUNNING)) return;
+    logTransportEvent("dispatch_begin", 0, command.info.binarySize, 0, "main");
     if (currentCommand()) {
         executeFirmwareCommand(command);
+        logTransportEvent("dispatch_end", command.status, command.info.binarySize, 0, "main");
+    } else {
+        logTransportEvent("dispatch_skipped", 0, command.info.binarySize, 0, "main");
     }
     phase.store(Phase::READY);
 }

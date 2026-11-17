@@ -201,3 +201,108 @@ def test_configure_only_reset_command_has_no_flash_or_erase(monkeypatch: pytest.
     assert command[-3:] == ["--after", "hard_reset", "run"]
     assert "write_flash" not in command and "erase_flash" not in command
     assert calls[0][1]["timeout"] == 30
+
+
+def test_flash_only_never_requests_credentials_tls_or_provisioning(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(setup_prebuilt.sys, "platform", "win32")
+    monkeypatch.setattr(setup_prebuilt.sys, "argv", ["setup_prebuilt.py", "--flash-only", "--port", "COM5"])
+    monkeypatch.setattr(setup_prebuilt.importlib, "import_module", lambda _: SERIAL_MODULE)
+    monkeypatch.setattr(setup_prebuilt, "verify_package", lambda root: calls.append(("verify", root)))
+    monkeypatch.setattr(setup_prebuilt, "flash", lambda root, port: calls.append(("flash", port)))
+
+    def forbidden(*_args):
+        raise AssertionError("Flash-only must not request or send configuration")
+
+    monkeypatch.setattr(setup_prebuilt.getpass, "getpass", forbidden)
+    monkeypatch.setattr(setup_prebuilt.configure_robot, "verified_windows_root", forbidden)
+    monkeypatch.setattr(setup_prebuilt, "provision", forbidden)
+    monkeypatch.setattr(setup_prebuilt, "reset_for_configuration", forbidden)
+    assert setup_prebuilt.main() == 0
+    assert calls == [("verify", setup_prebuilt.ROOT), ("flash", "COM5")]
+
+
+def test_monitor_mode_does_not_flash_validate_binary_or_request_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls = []
+    monkeypatch.setattr(setup_prebuilt.sys, "platform", "win32")
+    monkeypatch.setattr(setup_prebuilt.sys, "argv", ["setup_prebuilt.py", "--monitor", "--port", "COM5"])
+    monkeypatch.setattr(setup_prebuilt.importlib, "import_module", lambda _: SERIAL_MODULE)
+    monkeypatch.setattr(setup_prebuilt, "monitor", lambda *args: calls.append(args))
+
+    def forbidden(*_args):
+        raise AssertionError("Monitor must be read-only")
+
+    for name in ("verify_package", "flash", "provision", "reset_for_configuration"):
+        monkeypatch.setattr(setup_prebuilt, name, forbidden)
+    monkeypatch.setattr(setup_prebuilt.getpass, "getpass", forbidden)
+    monkeypatch.setattr(setup_prebuilt.configure_robot, "verified_windows_root", forbidden)
+    assert setup_prebuilt.main() == 0
+    assert calls == [("COM5", SERIAL_MODULE, 90)]
+
+
+@pytest.mark.parametrize("line", [
+    b"[BOOT] Stack-chan recovery-20261118.2\n",
+    b"[OUTBOUND] Channel disconnected\n",
+    b"[PCM] Staged segment: session=private-session seq=0 bytes=4096 total=4096 final=1\n",
+    b"[ENV] No environment sensors detected on Port A.\n",
+    b"Guru Meditation Error: Core  1 panic'ed (LoadProhibited). Exception was unhandled.\n",
+    b"PC      : 0x400d9876  PS      : 0x00060030  A0      : 0x800d1234\n",
+    b"Backtrace: 0x400d9876:0x3ffb1234 0x400d4321:0x3ffb5678\n",
+    b"rst:0xc (SW_CPU_RESET),boot:0x8 (SPI_FAST_FLASH_BOOT)\n",
+    b"Rebooting...\n",
+])
+def test_monitor_allows_only_supported_diagnostics(line: bytes) -> None:
+    safe = setup_prebuilt.diagnostic_line(line)
+    assert safe is not None
+    assert "private-session" not in safe
+
+
+@pytest.mark.parametrize("line", [
+    b'{"type":"stackchan.configure","token":"SECRET"}\n',
+    b"[WIFI] Trying: private-network\n",
+    b"[OUTBOUND] host=https://example.com/private?token=SECRET\n",
+    b"[ENV] endpoint example.com/private\n",
+    b"[PCM] token=SECRET\n",
+    b"[BOOT] password: SECRET\n",
+    b"[OUTBOUND] " + b"A" * 64 + b"\n",
+    b"[PCM] {\"ssid\":\"private\"}\n",
+    b"ordinary application output with private text\n",
+    b"\x1b[31m[BOOT] control sequence\n",
+])
+def test_monitor_filters_config_wifi_urls_secrets_and_arbitrary_output(line: bytes) -> None:
+    assert setup_prebuilt.diagnostic_line(line) is None
+
+
+def test_monitor_is_bounded_read_only_and_keeps_fragmented_safe_lines(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    connection = fake_connection(monkeypatch, [b"[OUTBOUND] Channel ", b"connected\n",
+                                              b'{"token":"SECRET"}\n', b"[PCM] Queue cleared\n"])
+    ticks = iter(range(1000))
+    monkeypatch.setattr(setup_prebuilt.time, "monotonic", lambda: next(ticks))
+    setup_prebuilt.monitor("COM5", SERIAL_MODULE, seconds=10)
+    output = capsys.readouterr().out
+    assert "[OUTBOUND] Channel connected" in output
+    assert "[PCM] Queue cleared" in output
+    assert "SECRET" not in output
+    assert "Monitor finished: 2" in output
+    assert connection.writes == []
+    assert connection.closed
+
+
+def test_diagnostic_port_opens_with_both_reset_control_lines_idle(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = FakeSerial([])
+    seen = []
+    connection.open = lambda: seen.append((connection.dtr, connection.rts))
+    module = SimpleNamespace(Serial=lambda **_kwargs: connection, SerialException=OSError)
+    monkeypatch.setattr(setup_prebuilt.time, "monotonic", lambda: 0)
+    assert setup_prebuilt.open_serial("COM5", module, deadline=1) is connection
+    assert seen == [(False, False)]
+    assert connection.writes == []
+
+
+def test_setup_modes_cannot_be_combined(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(setup_prebuilt.sys, "argv", ["setup_prebuilt.py", "--flash-only", "--monitor"])
+    with pytest.raises(SystemExit) as error:
+        setup_prebuilt.main()
+    assert error.value.code == 2

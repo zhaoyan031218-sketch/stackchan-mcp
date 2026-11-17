@@ -224,6 +224,80 @@ def test_relay_status_and_health_never_probe_device(config, relay_http):
     assert all(call[2]["timeout"] == 8 for call in calls)
 
 
+@pytest.mark.parametrize("detail", ["cmd write failed", "read failed", "CRC mismatch"])
+def test_sense_preserves_fixed_device_500_detail(config, relay_http, detail):
+    calls = relay_http(lambda *_args: response(
+        {"success": False, "error": "sensor read failed", "detail": detail}, status=500,
+    ))
+
+    result = registered_tools(config)["stackchan_sense"]()
+
+    assert result == f"HTTP 500: Environment sensor read failed: {detail}."
+    assert len(calls) == 1
+    assert calls[0][1].endswith("/device/env")
+
+
+@pytest.mark.parametrize("body", [
+    {"success": False, "error": "private-key", "detail": "private-key"},
+    {"success": 0, "error": "sensor read failed", "detail": "private-key"},
+    {"error": "sensor read failed", "detail": "private-key"},
+    {"success": False, "error": ["private-key"], "detail": {"key": "private-key"}},
+    ["private-key"],
+])
+def test_sense_unknown_500_body_stays_private(config, relay_http, body):
+    def failed(*_args):
+        result = response(body, status=500)
+        result.url = "https://device.example/env?credential=private-key"
+        return result
+
+    relay_http(failed)
+
+    result = registered_tools(config)["stackchan_sense"]()
+
+    assert result == "HTTP 500: Environment sensor request failed; no recognized device details."
+    assert "private-key" not in result
+
+
+@pytest.mark.parametrize("content", [
+    b"private-key not JSON", b"\xffprivate-key", b"private-key" * 1000,
+    json.dumps({"success": False, "error": "sensor read failed", "detail": "CRC mismatch",
+                "private": "private-key" * 1000}).encode(),
+])
+def test_sense_malformed_or_oversized_500_body_stays_private(config, relay_http, content):
+    relay_http(lambda *_args: response(content=content, status=500))
+
+    result = registered_tools(config)["stackchan_sense"]()
+
+    assert result == "HTTP 500: Environment sensor request failed; no recognized device details."
+    assert "private-key" not in result
+
+
+def test_sense_known_error_does_not_echo_unknown_detail(config, relay_http):
+    relay_http(lambda *_args: response(
+        {"success": False, "error": "sensor read failed", "detail": "private-key"}, status=500,
+    ))
+
+    assert registered_tools(config)["stackchan_sense"]() == "HTTP 500: Environment sensor read failed."
+
+
+@pytest.mark.parametrize(("body", "expected"), [
+    ({"success": False, "error": "no env sensor detected"},
+     "⚠️ No environment sensor detected on the device."),
+    ({"success": False, "error": "no env sensor detected", "detail": "no sensor ACK on Port A"},
+     "⚠️ No environment sensor detected on the device: no sensor ACK on Port A."),
+    ({"success": False, "error": "env bus unavailable", "detail": "Port A bus init failed"},
+     "⚠️ Environment sensor bus unavailable: Port A bus init failed."),
+    ({"success": False, "error": "no env sensor detected", "detail": "bus init failed"},
+     "⚠️ Environment sensor bus unavailable: Port A bus init failed."),
+    ({"success": False, "error": "no env sensor detected", "detail": "Port A bus init failed"},
+     "⚠️ Environment sensor bus unavailable: Port A bus init failed."),
+])
+def test_sense_distinguishes_unavailable_hardware_in_200_response(config, relay_http, body, expected):
+    relay_http(lambda *_args: response(body))
+
+    assert registered_tools(config)["stackchan_sense"]() == expected
+
+
 @pytest.mark.parametrize("error", [requests.Timeout, requests.ConnectionError])
 def test_relay_health_preserves_unconfirmed_availability(config, relay_http, error):
     def fail(*_args):

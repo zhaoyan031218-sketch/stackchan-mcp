@@ -609,6 +609,14 @@ JPEG in this path; the firmware captures RGB565 and converts frames with
 `frame2jpg()`. `initCamera()` releases M5Unified's internal I2C bus because the
 camera SCCB pins share GPIO 11 and 12.
 
+Optional SHT31/QMP6988 environmental sensors use `M5.Ex_I2C` on Port A
+(SDA 2, SCL 1). Address detection must use `scanID`, including the `stop()`
+result: `start()` alone only launches the transfer and can precede a NACK.
+`GET /env` distinguishes no detected sensor (HTTP 200, `success:false`) from
+bus initialization or measurement failure (HTTP 500). Its `bus_ready` and
+`detected` fields report setup state; `sensors` reports valid current readings.
+See `env-probe-ack-troubleshooting-2026-11-18.md` for regression evidence.
+
 ## Development Guidelines
 
 - Prefer small firmware changes that keep the main loop responsive.
@@ -673,3 +681,15 @@ Deferred WAV/PCM work must drain when external streams or camera ownership ends.
 Package completed images with `scripts/package_firmware.py` using the
 `runtime-configurable` profile. It validates the USB setup marker, offsets, sizes,
 checksums and ZIP contents before atomically publishing the archive.
+
+## PCM disconnect diagnostics and retained USB setup
+
+The runtime recovery image now emits fixed event labels for envelope acceptance,
+binary frame/read progress, dispatch, and connection closure. The version-pinned
+WebSockets middleware validates all patch anchors before writing and keeps
+`NODEBUG_WEBSOCKETS`; no peer text, headers, payload bytes or tokens enter logs.
+See [PCM disconnect troubleshooting](wss-pcm-disconnect-troubleshooting-2026-11-18.md).
+`setup_prebuilt.py --flash-only` preserves the existing runtime NVS configuration.
+The separate `--monitor` mode reads bounded, filtered diagnostics without sending
+configuration or reset commands. Diagnostic builds are not evidence that a
+reported hardware/network failure has been resolved.

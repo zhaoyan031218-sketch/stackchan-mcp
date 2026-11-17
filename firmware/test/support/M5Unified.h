@@ -62,5 +62,38 @@ struct TestI2C {
     bool scanID(uint8_t) { return true; }
     bool release() { ++releaseCount; return releaseOk; }
 };
-struct TestM5 { TestMic Mic; TestSpeaker Speaker; TestI2C In_I2C; };
+struct TestExternalI2C {
+    bool beginOk = true;
+    bool startOk = true;
+    bool writeOk = true;
+    bool readOk = true;
+    bool stopOk = true;
+    bool acknowledged[128] = {};
+    uint8_t currentAddress = 0;
+    uint8_t readData[25] = {};
+    unsigned beginCount = 0;
+    unsigned startCount = 0;
+    unsigned stopCount = 0;
+    unsigned writeCount = 0;
+    unsigned readCount = 0;
+    bool begin() { ++beginCount; return beginOk; }
+    // M5GFX starts an asynchronous address transfer here. A missing device is
+    // reported by stop(), not by the successful transaction start.
+    bool start(uint8_t address, bool, uint32_t) {
+        ++startCount;
+        currentAddress = address;
+        return startOk;
+    }
+    bool stop() { ++stopCount; return stopOk && acknowledged[currentAddress]; }
+    // This is the pinned M5Unified scanID contract.
+    bool scanID(uint8_t address, uint32_t frequency) { return start(address, false, frequency) && stop(); }
+    bool write(const uint8_t*, size_t) { ++writeCount; return writeOk && acknowledged[currentAddress]; }
+    bool read(uint8_t* data, size_t length, bool = false) {
+        ++readCount;
+        if (!readOk || !acknowledged[currentAddress] || length > sizeof(readData)) return false;
+        memcpy(data, readData, length);
+        return true;
+    }
+};
+struct TestM5 { TestMic Mic; TestSpeaker Speaker; TestI2C In_I2C; TestExternalI2C Ex_I2C; };
 inline TestM5 M5;

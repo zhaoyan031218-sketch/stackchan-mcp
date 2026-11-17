@@ -778,21 +778,35 @@ static void handleEnvDebug() {
 // → Temperature, humidity, and barometric pressure from onboard sensors
 // ────────────────────────────────────────────
 static void handleEnv() {
+    const EnvRuntimeStatus status = getEnvRuntimeStatus();
+    JsonDocument doc;
+    doc["bus"] = "port_a";
+    doc["bus_ready"] = status.busReady;
+    JsonObject detected = doc["detected"].to<JsonObject>();
+    detected["sht31"] = status.sht31Detected;
+    detected["qmp6988"] = status.qmp6988Detected;
     if (!isEnvAvailable()) {
-        server.send(200, "application/json",
-                    "{\"success\":false,\"error\":\"no env sensor detected\"}");
+        doc["success"] = false;
+        doc["error"] = status.busReady ? "no env sensor detected" : "env bus unavailable";
+        doc["detail"] = envLastError();
+        String body;
+        serializeJson(doc, body);
+        server.send(status.busReady ? 200 : 500, "application/json", body);
         return;
     }
 
     float temperature = NAN, humidity = NAN, pressure = NAN;
     bool ok = readEnv(temperature, humidity, pressure);
     if (!ok) {
-        server.send(500, "application/json",
-                    String("{\"success\":false,\"error\":\"sensor read failed\",\"detail\":\"") + envLastError() + "\"}");
+        doc["success"] = false;
+        doc["error"] = "sensor read failed";
+        doc["detail"] = envLastError();
+        String body;
+        serializeJson(doc, body);
+        server.send(500, "application/json", body);
         return;
     }
 
-    JsonDocument doc;
     doc["success"]     = true;
     // Use null in JSON for NAN (sensor absent or read error)
     if (isnan(temperature)) doc["temperature"] = nullptr;

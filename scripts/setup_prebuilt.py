@@ -140,7 +140,7 @@ def open_serial(port: str, serial_module: Any, deadline: float) -> Any:
             if connection is not None:
                 connection.close()
             time.sleep(0.25)
-    raise SetupError("USB port did not return. Check Device Manager for a changed COM number, close serial monitors, then retry --configure-only --port COM_NUMBER.")
+    raise SetupError("USB port did not return. Check Device Manager for a changed COM number, close other serial monitors, then retry your command with --port COM_NUMBER.")
 
 
 class ProtocolReader:
@@ -148,7 +148,7 @@ class ProtocolReader:
         self.pending = bytearray()
         self.discarding = False
 
-    def read(self, connection: Any) -> dict[str, Any] | None:
+    def read_line(self, connection: Any) -> bytes | None:
         raw = connection.read_until(b"\n", MAX_RESULT_BYTES + 1)
         if not self.discarding:
             self.pending.extend(raw)
@@ -162,6 +162,12 @@ class ProtocolReader:
             return None
         complete = bytes(self.pending)
         self.pending.clear()
+        return complete
+
+    def read(self, connection: Any) -> dict[str, Any] | None:
+        complete = self.read_line(connection)
+        if complete is None:
+            return None
         try:
             message = json.loads(complete)
         except (ValueError, UnicodeDecodeError):
@@ -235,12 +241,86 @@ def choose_port(requested: str | None) -> str:
     return port
 
 
+def diagnostic_line(raw: bytes) -> str | None:
+    """Allow selected diagnostics, excluding configuration and network identifiers."""
+    try:
+        line = raw.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    if not line or len(line) > MAX_RESULT_BYTES or any(ord(c) < 32 for c in line):
+        return None
+    if any(c in line for c in "{}") or re.search(
+        r"(?i)(?:https?|wss?)://|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.[a-z]{2,63}\b"
+        r"|\b(?:token|password|ssid|authorization|bearer|ca_pem)\s*[:=]", line
+    ):
+        return None
+    if re.match(r"^\[(?:BOOT|OUTBOUND|PCM|ENV)\] ", line):
+        # Session names may come from a remote caller; diagnostics only need sequence/size.
+        line = re.sub(r"\b(?:session|session_id)=[^ ]+", "session=<redacted>", line)
+        line = re.sub(r"\bcurrent=(?![0-9]+(?: |$))[^ ]+", "current=<redacted>", line)
+        line = re.sub(r"(?<=\[PCM\] Session complete: ).+", "<redacted>", line)
+        if re.search(r"[A-Za-z0-9_+/=-]{40,}", line):
+            return None
+        return line
+    patterns = (
+        r"ESP-ROM:esp32s3-[0-9]{8}",
+        r"Build:[A-Z][a-z]{2} +[0-9]{1,2} +[0-9]{4}",
+        r"rst:0x[0-9a-fA-F]+ \([A-Z0-9_]+\),boot:0x[0-9a-fA-F]+ \([A-Z0-9_]+\)",
+        r"Saved PC:0x[0-9a-fA-F]+",
+        r"Guru Meditation Error: Core +[0-9]+ panic'ed \((?:LoadProhibited|StoreProhibited|"
+        r"InstrFetchProhibited|IllegalInstruction|LoadStoreError|LoadStoreAlignment|"
+        r"Unhandled debug exception|Interrupt wdt timeout on CPU[0-9]+|"
+        r"Cache disabled but cached memory region accessed|IntegerDivideByZero|DoubleException)\)\.?(?: Exception was unhandled\.)?",
+        r"Debug exception reason: Stack canary watchpoint triggered \([A-Za-z0-9_-]{1,24}\)",
+        r"Core +[0-9]+ register dump:",
+        r"(?:(?:PC|PS|A[0-9]{1,2}|SAR|EXCCAUSE|EXCVADDR|LBEG|LEND|LCOUNT)\s*:\s*0x[0-9a-fA-F]+\s*)+",
+        r"Backtrace: *(?:0x[0-9a-fA-F]+:0x[0-9a-fA-F]+ *)+(?:\|<-CORRUPTED)?",
+        r"ELF file SHA256: [0-9a-fA-F]+",
+        r"abort\(\) was called at PC 0x[0-9a-fA-F]+ on core [0-9]+",
+        r"CORRUPT HEAP: Bad (?:head|tail) at 0x[0-9a-fA-F]+\. Expected 0x[0-9a-fA-F]+ got 0x[0-9a-fA-F]+",
+        r"Rebooting\.\.\.",
+        r"Brownout detector was triggered",
+    )
+    return line if any(re.fullmatch(pattern, line) for pattern in patterns) else None
+
+
+def monitor(port: str, serial_module: Any, seconds: int = 90) -> None:
+    if not 1 <= seconds <= 300:
+        raise SetupError("Monitor duration must be between 1 and 300 seconds")
+    deadline = time.monotonic() + seconds
+    connection = open_serial(port, serial_module, deadline)
+    reader = ProtocolReader()
+    shown = 0
+    print(f"Read-only diagnostic monitor: {seconds} seconds. No reset or configuration commands will be sent.")
+    print("Trigger one short speech in Kelivo while this runs. Press the device Reset button only if you need boot diagnostics.")
+    try:
+        while time.monotonic() < deadline:
+            try:
+                raw = reader.read_line(connection)
+            except (OSError, serial_module.SerialException):
+                connection.close()
+                print("USB disconnected; waiting for the same COM port within the remaining monitor time...")
+                connection = open_serial(port, serial_module, deadline)
+                reader = ProtocolReader()
+                continue
+            if raw is not None and (safe := diagnostic_line(raw)) is not None:
+                print(safe, flush=True)
+                shown += 1
+    finally:
+        connection.close()
+    print(f"Monitor finished: {shown} permitted diagnostic lines shown; no log file was written.")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--host", default="gojobody.up.railway.app")
     parser.add_argument("--port", help="Current CoreS3 COM port, for example COM5")
-    parser.add_argument("--configure-only", action="store_true", help="Reset and update USB configuration without flashing")
-    parser.add_argument("--list-ports", action="store_true")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--configure-only", action="store_true", help="Reset and update USB configuration without flashing")
+    mode.add_argument("--flash-only", action="store_true", help="Flash verified firmware and preserve existing device configuration")
+    mode.add_argument("--monitor", action="store_true", help="Read selected diagnostics for up to 90 seconds; no reset or writes")
+    mode.add_argument("--list-ports", action="store_true")
+    parser.add_argument("--monitor-seconds", type=int, default=90, help="Monitor duration, 1 to 300 seconds (default: 90)")
     args = parser.parse_args()
     if sys.platform != "win32" or sys.version_info < (3, 11):
         parser.error("Run this helper with Python 3.11 or newer on the Windows computer connected to CoreS3")
@@ -250,10 +330,19 @@ def main() -> int:
             for item in available_ports():
                 print(f"{item.device}: {item.description}")
             return 0
+        if args.monitor:
+            monitor(choose_port(args.port), serial_module, args.monitor_seconds)
+            return 0
         verify_package(ROOT)
+        port = choose_port(args.port)
+        if args.flash_only:
+            print("Flashing verified firmware only; existing device Wi-Fi and Railway settings are preserved.")
+            flash(ROOT, port)
+            print("Flash finished. Compatible existing runtime configuration will be reused; an unconfigured device waits for USB setup.")
+            print("To collect diagnostics, run this helper with --monitor --port and the current COM number.")
+            return 0
         if not sys.stdin.isatty():
             raise SetupError("Run in an interactive Windows terminal so passwords can be entered without echo")
-        port = choose_port(args.port)
         host = configure_robot.validate_host(args.host)
         print(f"Verifying {host}:443 with Windows certificate trust...")
         ca = configure_robot.verified_windows_root(host)
