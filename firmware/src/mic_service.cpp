@@ -56,6 +56,7 @@ static constexpr uint32_t TOUCH_VOICE_START_TIMEOUT_MS = 4000;
 // プリトリガーリングバッファ
 static int16_t pre_trigger_buf[PRE_TRIGGER_BUFFER_SAMPLES];
 static int16_t capture_frame[MIC_FRAME_SAMPLES];
+static bool capture_frame_pending = false;
 static bool capture_stop_pending = false;
 static size_t  pre_buf_write = 0;
 static bool    pre_buf_full  = false;
@@ -230,8 +231,13 @@ bool initMicrophone() {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
 
+    const bool micWasRunning = M5.Mic.isRunning();
     applyMicConfig();
     mic_started = M5.Mic.begin();
+    if (!micWasRunning) {
+        capture_frame_pending = false;
+        memset(capture_frame, 0, sizeof(capture_frame));
+    }
     audioGateLeave("mic-init");
 
     if (!mic_started) {
@@ -284,6 +290,7 @@ bool suspendMicrophoneCapture() {
     if (M5.Mic.isRunning()) M5.Mic.end();
     const bool stopped = !M5.Mic.isRunning();
     if (stopped) {
+        capture_frame_pending = false;
         memset(capture_frame, 0, sizeof(capture_frame));
         capture_stop_pending = false;
     }
@@ -318,19 +325,35 @@ void serviceMicrophoneResume() {
     }
 }
 
+static void queueCaptureFrame() {
+    // M5Unified record() queues an asynchronous write; the same destination
+    // must not be submitted again or read until isRecording() reaches zero.
+    capture_frame_pending = M5.Mic.record(capture_frame, MIC_FRAME_SAMPLES, MIC_SAMPLE_RATE);
+    if (!capture_frame_pending) ++record_failure_count;
+}
+
 void updateMicrophone() {
     if (isBoothMode() || capture_stop_pending) return;
     if (!M5.Mic.isEnabled() || !M5.Mic.isRunning()) return;
     if (!record_buffer) return;
-    if (isPlaybackActive()) return;
+    if (isPlaybackActive() || isPcmStreamActive()) return;
 
     if (!audioGateEnter("mic-record", 0)) return;
-    bool recorded = M5.Mic.record(capture_frame, MIC_FRAME_SAMPLES, MIC_SAMPLE_RATE);
-    audioGateLeave("mic-record");
-    if (!recorded) {
-        record_failure_count++;
+    if (!M5.Mic.isRunning() || isPlaybackActive() || isPcmStreamActive()) {
+        audioGateLeave("mic-record");
         return;
     }
+    if (!capture_frame_pending) {
+        queueCaptureFrame();
+        audioGateLeave("mic-record");
+        return;
+    }
+    if (M5.Mic.isRecording()) {
+        audioGateLeave("mic-record");
+        return;
+    }
+    capture_frame_pending = false;
+    audioGateLeave("mic-record");
     size_t got = MIC_FRAME_SAMPLES;
 
     float rms = calcRmsNorm(capture_frame, got);
@@ -420,6 +443,15 @@ void updateMicrophone() {
 
         case MIC_SENDING:
             break;
+    }
+
+    // Start the next asynchronous frame only after every reader has consumed
+    // this one. A PCM task may have taken the microphone while we processed it.
+    if (audioGateEnter("mic-record", 0)) {
+        if (M5.Mic.isRunning() && !isPlaybackActive() && !isPcmStreamActive()) {
+            queueCaptureFrame();
+        }
+        audioGateLeave("mic-record");
     }
 }
 

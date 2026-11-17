@@ -1,53 +1,51 @@
-# recovery-20261117.1 验证记录
+# recovery-20261118.1 验证记录
 
-基线：`1093695f8fa094c5e4fb9c1b35182b598111fb16`。
-在独立云端工作副本完成检查，原工作区源码保留。
+基线：`49664df`（`codex/cores3-recovery-20261117`），继承 MiniMax 修复 `9f4cad9`、
+Railway 适配、单次拍照和 WebSocket 照片/录音分片回传修复。
+新增 runtime USB 配置、摄像头引脚修正、异步麦克风与播放队列修复。
 
-| 检查 | 结果 |
-| --- | --- |
-| `uv run --locked ruff check .` | 通过 |
-| `uv run --locked pyright` | 0 错误、0 警告 |
-| `uv run --locked pytest --cov=mcp_server --cov=scripts --cov-report=term-missing` | 642 项通过；11 条依赖弃用警告 |
-| `uv run --locked pytest tests/test_mcp_server.py -q` | 123 项通过 |
-| `uv run --locked python scripts/ci_security_audit.py` | 通过 |
-| `pio test -d firmware -e native` | 99 项原生固件测试通过 |
-| `pio run -d firmware -e m5stack-cores3-public -j 4` | 编译成功 |
-| `pio run -d firmware -e m5stack-cores3-railway -j 4` | 使用测试配置编译成功 |
-| `pio check -d firmware -e m5stack-cores3-public --severity=high --fail-on-defect=high` | 通过，No defects found |
-| `git diff --check` | 通过 |
+## 已通过
 
-Railway 目标的 RAM 静态占用为 103,028 / 327,680 字节（31.4%），
-程序 Flash 占用为 1,480,773 / 6,553,600 字节（22.6%）。这不是运行时剩余内存测量。
+- Python Ruff 静态检查：通过。
+- Pyright 使用项目 Python 环境：0 errors、0 warnings。
+- 完整 Python 测试：675 passed；11 项依赖弃用警告。
+- PlatformIO native 固件测试：119/119，通过。
+- `pio run -e m5stack-cores3-runtime`：编译成功，ESP32-S3 app 镜像 1,480,496 字节。
+- `pio check -e m5stack-cores3-runtime --severity=high --fail-on-defect=high`：No defects found。
+- 仓库安全审计与 `git diff --check`：通过。
+- 四个镜像的目标、分区地址、尺寸与 SHA-256 校验；ZIP CRC；解压后配置助手
+  `verify_package()` 再次验证：通过。
+- 独立代码复查覆盖 USB 小缓冲区、分片接收、有限等待、旧配置保护与串口秘密泄露。
 
-新增验证覆盖缺少私密配置、未启用出站、缺少主机/证书/token、token 过短、
-错误端口、误用 public 目标，以及构建失败时不得上传磁盘上残留的旧固件。
-继承的集成测试通过真实本地 MCP/WebSocket 服务验证图片字节回传，并用真实
-ffmpeg 验证 MP3 到设备 PCM 的转换；输入设备和付费 TTS 提供商均为测试替身。
+## 下载包
 
-首次全套 Python 检查中，一项本地服务测试遇到临时端口被占用；单项复查及
-完整重跑均通过。没有以跳过测试或改动云端业务逻辑掩盖该失败。
+文件：`releases/cores3-recovery-20261118.1.zip`，**955,453 字节**。
+
+SHA-256：
+
+```text
+ac9b64eef74a538049719444dfc3f5952faf5fe1966edc85a0692da5f52552d1
+```
+
+包内有四个已编译镜像及 Windows USB 配置助手，不含 Wi-Fi 密码、设备 token 或
+API Key。目标为 `m5stack-cores3-runtime`，并非禁止云端功能的 public 检查镜像。
+无需下载 ESP32 编译器；首次运行仍需 Python 和小型 USB 烧录依赖。
 
 ## 构建依赖
 
-使用 PlatformIO 6.1.18、espressif32 7.0.0、Arduino ESP32 2.0.17、
-M5Unified 0.2.15、M5GFX 固定提交 `5268353`、StackChan-BSP 固定提交
-`0addef4`、ArduinoJson 7.4.3、AnimatedGIF 2.2.3、WebSockets 2.7.2。
-`pio pkg list` 还列出安装器拉取的 M5GFX 0.3.0；编译依赖图和编译日志实际
-选用的是直接固定的 M5GFX 0.2.21 源码提交，没有将项目升级到 0.3.0。
-其他解析出的库包括 IRremoteESP8266 2.9.0、M5Unit-NFC 0.1.2、
-M5UnitUnified 0.6.5、M5HAL 0.1.4、M5Utility 0.3.1。
+PlatformIO 6.1.18；espressif32 7.0.0；Arduino ESP32 2.0.17；esptool 4.11.0；
+M5Unified 0.2.15；M5GFX 固定提交 `5268353`；StackChan-BSP 固定提交 `0addef4`；
+ArduinoJson 7.4.3；AnimatedGIF 2.2.3；WebSockets 2.7.2。
+PlatformIO 会同时缓存 M5Unified 约束解析出的 M5GFX 0.3.0，实际生成的 C++ 依赖
+文件确认使用显式固定提交的 M5GFX 目录，而非该缓存副本。
 
-云端原有的 esptool 缓存安装不完整，已从缓存归档恢复，并与 PlatformIO
-注册表的 SHA-256 核对一致。此操作没有更改项目依赖版本，也没有关闭 TLS 校验。
-Railway 编译验证复用相同依赖集，配置仅含示例主机和测试凭据，未烧录到设备。
+## 尚需实机验收
 
-## 尚需实机确认
+没有连接用户的 USB 设备；未烧录、拍照、录音或让扬声器实际发声。
+Windows 串口重枚举、真实 NVS 写入及断电恢复、Wi-Fi/TLS、摄像头清晰度和音频
+时序仍需在设备上验收。自动测试不证明这些硬件行为。
 
-- Windows 上的证书获取、依赖下载、USB 端口和烧录流程需要在用户电脑执行。
-- 机器人使用真实 Wi-Fi/设备 token/CA 后能否持续连接 Railway。
-- 实际摄像头画面、扬声器声音，以及 Kelivo 是否把图片传给支持图像的模型。
-- Railway 当前部署版本、副本数量和真实 TTS 配置。
-
-此次没有访问真实机器人或付费 TTS，没有更新 Railway。云端联网白名单阻止了
-对用户 Railway 主机的 HTTP 检查，不能由该网络拒绝推断 Railway 服务故障。
-测试配置、测试固件、缓存、日志和私密文件不包含在发布的源码中。
+按用户要求以 GitHub 项目为准，未访问 Railway 做生产检查。
+Kelivo 的模型需要支持图片并收到 MCP ImageContent，才能理解机器人拍到的画面。
+验收顺序与恢复步骤见 `START-HERE.zh-CN.md`。当前提交保存于独立恢复分支，
+不通过本次操作修改原有部署分支。

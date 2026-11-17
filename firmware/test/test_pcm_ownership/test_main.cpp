@@ -5,6 +5,7 @@
 #include "../../src/playback_service.cpp"
 
 static bool cameraActive = false;
+static bool streamActive = false;
 static int streamChecks = 0;
 static int streamBecomesActiveAt = 0;
 static uint32_t currentOutboundGeneration = 0;
@@ -14,7 +15,7 @@ bool isOutboundGenerationCurrent(uint32_t generation) { return generation == cur
 bool isCameraSessionActive() { return cameraActive; }
 bool isPcmStreamActive() {
     ++streamChecks;
-    return streamBecomesActiveAt && streamChecks >= streamBecomesActiveAt;
+    return streamActive || (streamBecomesActiveAt && streamChecks >= streamBecomesActiveAt);
 }
 bool audioGateEnter(const char*, uint32_t) { return true; }
 void audioGateLeave(const char*) {}
@@ -37,9 +38,16 @@ void setUp() {
     s_isPlaying = false;
     s_audioQueue = {};
     s_downloadInFlight = false;
+    s_downloadQueue = nullptr;
     s_downloadCompleteQueue = nullptr;
+    s_downloadTaskHandle = nullptr;
+    s_downloadStartedMs = 0;
+    s_micResumeRequested = false;
+    s_lastSpeakerEndMs = 0;
+    testMillis = 10000;
     M5 = {};
     cameraActive = false;
+    streamActive = false;
     streamChecks = 0;
     streamBecomesActiveAt = 0;
     currentOutboundGeneration = 0;
@@ -169,6 +177,47 @@ static void test_stale_queue_cleanup_preserves_current_generation_and_direct() {
     TEST_ASSERT_EQUAL_UINT(1, s_pcmQueue.front().generation);
 }
 
+static AudioTask wavTask(const char* id) {
+    return {String(id), String("http://example.invalid/voice.wav"), PRIORITY_NORMAL};
+}
+
+static void test_wav_queued_during_stream_starts_after_stream_finishes() {
+    initPlayback();
+    streamActive = true;
+    TEST_ASSERT_TRUE(enqueueAudioTask(wavTask("after-stream")));
+    updatePlayback();
+    TEST_ASSERT_FALSE(s_downloadInFlight);
+    TEST_ASSERT_EQUAL_UINT(1, s_audioQueue.size());
+
+    streamActive = false;
+    updatePlayback();
+    TEST_ASSERT_TRUE(s_downloadInFlight);
+    TEST_ASSERT_EQUAL_UINT(0, s_audioQueue.size());
+    TEST_ASSERT_TRUE(s_lastPlayedVoiceId == String("after-stream"));
+}
+
+static void test_active_download_preserves_later_wav_requests() {
+    initPlayback();
+    TEST_ASSERT_TRUE(enqueueAudioTask(wavTask("first")));
+    TEST_ASSERT_TRUE(enqueueAudioTask(wavTask("second")));
+    processAudioQueue();
+    TEST_ASSERT_TRUE(s_downloadInFlight);
+    TEST_ASSERT_EQUAL_UINT(1, s_audioQueue.size());
+    TEST_ASSERT_TRUE(s_audioQueue.top().voice_id == String("second"));
+}
+
+static void test_busy_camera_preserves_queued_pcm() {
+    cameraActive = true;
+    enqueuePcmBuffer(pcm(), 2, "after-camera", true, PcmOrigin::DIRECT);
+    processAudioQueue();
+    TEST_ASSERT_FALSE(s_isPlaying);
+    TEST_ASSERT_EQUAL_UINT(1, s_pcmQueue.size());
+    cameraActive = false;
+    updatePlayback();
+    TEST_ASSERT_TRUE(s_isPlaying);
+    TEST_ASSERT_EQUAL_UINT(0, s_pcmQueue.size());
+}
+
 int main() {
     UNITY_BEGIN();
     RUN_TEST(test_cleanup_preserves_direct_queue_with_same_session);
@@ -183,5 +232,8 @@ int main() {
     RUN_TEST(test_disconnect_during_speaker_setup_does_not_start_audio);
     RUN_TEST(test_cleanup_covers_staging_from_an_earlier_session);
     RUN_TEST(test_stale_queue_cleanup_preserves_current_generation_and_direct);
+    RUN_TEST(test_wav_queued_during_stream_starts_after_stream_finishes);
+    RUN_TEST(test_active_download_preserves_later_wav_requests);
+    RUN_TEST(test_busy_camera_preserves_queued_pcm);
     return UNITY_END();
 }

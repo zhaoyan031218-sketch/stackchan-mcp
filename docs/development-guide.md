@@ -656,3 +656,20 @@ The default `pio run` selects `m5stack-cores3`; cloud uploads explicitly select
 the Railway target so its stricter requirements do not affect LAN builds.
 `scripts/rebuild_robot.py` provides the isolated Windows configuration/build/upload
 flow. See [clean rebuild instructions](../START-HERE.zh-CN.md).
+
+## CoreS3 runtime USB provisioning (recovery-20261118.1)
+
+`m5stack-cores3-runtime` builds a credential-free image with USB provisioning. It
+ignores private `config.h`, reads cloud and Wi-Fi values from one validated NVS
+blob, and never lets old portal Wi-Fi override that configuration. The startup
+window accepts bounded protocol-v1 JSON; unconfigured devices remain in setup.
+Use the precompiled package and `setup_prebuilt.py` on Windows; preserve
+`m5stack-cores3-railway` for the existing private source-build path.
+
+CoreS3 camera XCLK is `-1`; GPIO 2 is external I2C SDA. Microphone `record()`
+submits asynchronous work, so process a frame only after `isRecording()` is zero.
+Deferred WAV/PCM work must drain when external streams or camera ownership ends.
+
+Package completed images with `scripts/package_firmware.py` using the
+`runtime-configurable` profile. It validates the USB setup marker, offsets, sizes,
+checksums and ZIP contents before atomically publishing the archive.

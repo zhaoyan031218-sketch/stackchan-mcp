@@ -175,3 +175,11 @@ Reference: [RFC 6455 masking requirements](https://www.rfc-editor.org/rfc/rfc645
 - `firmware/src/outbound_service.cpp`: deferred metadata/binary transmission.
 - `mcp_server/outbound_relay.py`: validation, disconnection and safe error codes.
 - `mcp_server/stackchan_client.py`: single relay capture and safe error rendering.
+
+
+## 2026-11-18：新增预编译 USB 配置流程
+
+现在可使用 `m5stack-cores3-runtime` 预编译包，经 USB 写入 Wi-Fi、设备 token 和
+验证后的 TLS 根证书，不必在 Windows 下载完整编译工具链。详见
+[当前恢复入口](../START-HERE.zh-CN.md)。本文原有的私密 `config.h` 编译步骤保留为
+源码构建方式。`m5stack-cores3-public` 仍仅用于编译检查，不能代替本次 runtime 包。
