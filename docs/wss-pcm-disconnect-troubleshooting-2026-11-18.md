@@ -14,6 +14,45 @@ added diagnostics because the original 503 alone did not identify the cause.
 The user's subsequent `recovery-20261118.2` trace identifies the early-close
 mechanism. The source of the underlying network/TLS pause remains unknown.
 
+## Clarified working baseline and rollback behavior
+
+The user subsequently clarified that the cloud commit `9f4cad9` was unchanged:
+MiniMax speech worked before reflashing, then failed after the firmware changes.
+Camera and listening had not worked previously. Sensor, camera and audio-status
+503 results were collected consecutively after the speech disconnect, so those
+results do not establish three independent failures. Preserve the cloud version
+while investigating the firmware regression. A proposed cloud small-segment
+experiment was stopped before any source edit, commit, push or deployment.
+
+The likely older download name is
+`stackchan-mcp-codex-railway-deployment.zip`. That is a GitHub branch source
+archive, not an immutable firmware-image version. Its filename alone does not
+identify the compiled binary, local configuration or complete dependency set.
+The source at `385c690` used private compile-time `src/config.h` for outbound
+credentials and the `wifi` NVS namespace for portal Wi-Fi settings. The recovery
+runtime image instead uses provisioned `sc-cloud/config`; old firmware does not
+read that blob. Rebuilding an old archive without its private configuration, or
+erasing device configuration, can therefore leave it offline. Deleting files on
+the computer alone does not erase device NVS. The user's previous offline
+rollback has no boot trace, so its exact cause remains unconfirmed.
+
+Source comparison found that the two-second receive timeout, PSRAM allocation
+and frame cap predate the recovery firmware. The receive patch is the same git
+blob in `385c690`, `1093695` and `ced673c`. Main-loop ordering, WSS task core,
+priority and stack, TLS settings and direct dependency pins also remain the
+same. The new binary writer affects outgoing camera/audio replies, not this
+incoming first PCM segment. Microphone handling now waits for asynchronous
+completion and introduces no new busy loop; playback changes occur after the
+receive stage that fails in the supplied trace.
+
+Runtime provisioning does add roughly 24 KiB of persistent internal buffers
+and changes configuration selection. Those are real differences, but the
+observed allocation succeeds and remaining heap is substantial. They are not
+proven causes. Release .2 diagnostics also cannot explain the first failure,
+which already occurred on .1. Thus .3 targets the recorded timeout; it is not
+proof that the earlier firmware introduced that timeout or that the complete
+regression cause has been identified.
+
 ## Device evidence from recovery-20261118.2
 
 | Event | Command age | Expected / received bytes | Deadline remaining |
