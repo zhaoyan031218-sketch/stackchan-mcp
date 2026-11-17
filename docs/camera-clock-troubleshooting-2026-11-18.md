@@ -2,9 +2,10 @@
 
 ## Report and investigation
 
-The robot was reported unable to provide usable camera vision through a Kelivo
-client connected to Railway MCP. There is no device serial log or captured image
-in this workspace, so the cause of that live failure is not yet confirmed.
+The robot was initially reported unable to provide usable camera vision through
+a Kelivo client connected to Railway MCP. At that point neither a device serial
+log nor a captured image was available. Subsequent user verification is recorded
+below; it does not isolate the original cause to this pin fix alone.
 
 The firmware set `CAM_PIN_XCLK` to GPIO 2 and configured a 20 MHz output. The
 official M5CoreS3 GC0308 driver sets `pin_xclk = -1`. M5Unified 0.2.15 maps GPIO 2
@@ -51,6 +52,21 @@ is idle, verify it can be decoded and shows the current scene, then verify touch
 and external sensor readings still work. Repeat after speech playback. If MCP
 receives an image but the model cannot describe it, inspect Kelivo's model vision
 support and image tool-result handling separately.
+
+## Subsequent hardware result on recovery-20261118.3
+
+After the user confirmed speech recovery, the camera tool returned
+`Photo captured (5013 bytes)` and the user reported that Kelivo described the
+scene. Their COM7 log shows status 200 followed by a complete 5,049-byte binary
+reply in five WebSocket fragments, taking 14 ms to send. The 36-byte application
+header accounts exactly for the difference from the 5,013-byte JPEG body.
+
+This runtime image includes both the CoreS3 clock-pin correction and the earlier
+bounded, randomly masked binary reply writer. The .3 update itself changes PCM
+receive waiting rather than camera code. The evidence supports successful image
+delivery on this run; it does not identify which prior camera/transport fix was
+the sole historical cause. No original photo was supplied to the development
+environment, and exposure quality has not been independently assessed.
 
 ## References
 

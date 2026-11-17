@@ -152,6 +152,22 @@ The pinned middleware validates the dependency version and all patch anchors
 before writing either local library file. Receive allocation and frame-size
 limits remain unchanged.
 
+## User-confirmed result on recovery-20261118.3
+
+With the cloud version unchanged, the user reported audible success and supplied
+a complete staged-playback trace. Three segments of 49,152, 49,152 and 33,118
+PCM bytes were received and accepted. The first two returned 202; the final one
+returned 200 after `Speaker started`, followed by `Session complete`. Total
+audio was 131,422 bytes. No timeout or reconnect appears in this supplied run.
+
+Envelope-to-frame-complete ages were 5,317, 7,170 and 3,299 ms. These total times
+must not be confused with the old two-second no-progress timeout. The result
+confirms that the bounded receive change restored this speech test, while the
+underlying source of network/TLS pauses and the complete historical regression
+provenance remain unresolved. The following separate camera test also completed;
+see `VALIDATION.zh-CN.md`. No additional firmware or cloud change was made for
+that test.
+
 ## Verification and remaining work
 
 The new native diagnostic tests pass, including a boundary matrix that compares
