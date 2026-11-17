@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import hmac
 import json
+import logging
 import os
 import time
 import uuid
@@ -17,6 +18,9 @@ from starlette.responses import JSONResponse, Response
 from starlette.routing import Route, WebSocketRoute
 from starlette.websockets import WebSocket, WebSocketDisconnect
 
+from .relay_errors import RELAY_ERRORS
+
+logger = logging.getLogger(__name__)
 MAX_BINARY = 128 * 1024
 MAX_AUDIO_REPLY = 512 * 1024
 MAX_TEXT = 8192
@@ -65,10 +69,17 @@ class RelaySettings:
 
 
 class ChannelError(Exception):
-    def __init__(self, status: int, message: str):
+    def __init__(self, status: int, message: str, code: str | None = None):
         self.status = status
         self.message = message
+        self.code = code
         super().__init__(message)
+
+
+class DeviceReplyError(ValueError):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__(RELAY_ERRORS[code])
 
 
 @dataclass
@@ -105,12 +116,19 @@ class Relay:
         return bool(self.peer and self.peer.ready
                     and time.monotonic() - self.peer.last_seen < self.settings.heartbeat_timeout)
 
-    async def disconnect(self, peer: Peer, message: str) -> None:
+    async def disconnect(self, peer: Peer, message: str, code: str | None = None) -> None:
         peer.ready = False
         if self.peer is peer:
             self.peer = None
         if peer.pending and not peer.pending.future.done():
-            peer.pending.future.set_exception(ChannelError(503, message))
+            pending = peer.pending
+            stage = "awaiting_binary" if pending.binary_size is not None else "awaiting_reply"
+            if code == "device_disconnected" and pending.binary_size is not None:
+                code = "binary_reply_interrupted"
+                message = RELAY_ERRORS[code]
+            logger.warning("Device channel interrupted: path=%s stage=%s code=%s expected_bytes=%s",
+                           pending.path, stage, code or "channel_closed", pending.binary_size)
+            pending.future.set_exception(ChannelError(503, message, code))
         with contextlib.suppress(RuntimeError, WebSocketDisconnect, OSError, TimeoutError):
             await asyncio.wait_for(peer.socket.close(code=1012), 1.0)
 
@@ -123,6 +141,7 @@ class Relay:
         old, self.peer = self.peer, peer
         if old:
             await self.disconnect(old, "Device reconnected; command was not retried")
+        failure_code = "device_disconnected"
         try:
             while True:
                 timeout = self.settings.heartbeat_timeout if peer.ready else self.settings.hello_timeout
@@ -136,22 +155,26 @@ class Relay:
                     continue
                 text = event.get("text", "")
                 if len(text.encode()) > MAX_TEXT:
-                    raise ValueError("Oversized device message")
+                    raise DeviceReplyError("reply_text_too_large")
                 data = json.loads(text)
                 if not isinstance(data, dict):
-                    raise ValueError("Invalid device message")
+                    raise DeviceReplyError("reply_invalid_message")
                 if not peer.ready:
                     if data != {"type": "hello", "v": 1}:
-                        raise ValueError("Expected protocol hello")
+                        raise DeviceReplyError("reply_invalid_message")
                     peer.ready = True
                 elif data.get("type") == "heartbeat":
                     continue
                 else:
                     self.text_reply(peer, data)
+        except DeviceReplyError as exc:
+            failure_code = exc.code
+        except json.JSONDecodeError:
+            failure_code = "reply_invalid_json"
         except (WebSocketDisconnect, TimeoutError, ValueError, OSError, RuntimeError):
             pass
         finally:
-            await self.disconnect(peer, "Device disconnected; command was not retried")
+            await self.disconnect(peer, RELAY_ERRORS[failure_code], failure_code)
 
     @staticmethod
     def text_reply(peer: Peer, data: dict[str, Any]) -> None:
@@ -160,7 +183,7 @@ class Relay:
             return
         status = data.get("status")
         if type(status) is not int or not 200 <= status <= 599:
-            raise ValueError("Invalid response status")
+            raise DeviceReplyError("reply_invalid_status")
         if "binary_size" in data:
             size = data["binary_size"]
             expected_type, limit = {
@@ -168,27 +191,29 @@ class Relay:
                 "/audio": ("audio/wav", MAX_AUDIO_REPLY),
             }.get(pending.path, (None, 0))
             if type(size) is not int or not 0 < size <= limit:
-                raise ValueError("Invalid binary size")
+                raise DeviceReplyError("reply_invalid_binary_size")
             if data.get("content_type") != expected_type:
-                raise ValueError("Unsupported binary response")
+                raise DeviceReplyError("reply_wrong_content_type")
             pending.binary_size, pending.status = size, status
             pending.content_type = str(expected_type)
         else:
             body = data.get("body")
             if not isinstance(body, dict):
-                raise ValueError("Expected object response")
+                raise DeviceReplyError("reply_missing_body")
             pending.future.set_result(JSONResponse(body, status_code=status))
 
     @staticmethod
     def binary_reply(peer: Peer, raw: bytes) -> None:
         if (not peer.ready or not HEADER_SIZE <= len(raw) <= MAX_AUDIO_REPLY + HEADER_SIZE
                 or not raw.startswith(MAGIC)):
-            raise ValueError("Invalid binary frame")
+            raise DeviceReplyError("reply_invalid_binary_frame")
         pending = peer.pending
         if not pending or pending.future.done() or raw[4:36] != pending.id.encode():
             return
-        if pending.binary_size is None or len(raw) != HEADER_SIZE + pending.binary_size:
-            raise ValueError("Binary response length mismatch")
+        if pending.binary_size is None:
+            raise DeviceReplyError("reply_missing_binary_metadata")
+        if len(raw) != HEADER_SIZE + pending.binary_size:
+            raise DeviceReplyError("reply_binary_length_mismatch")
         pending.future.set_result(Response(raw[HEADER_SIZE:], status_code=pending.status,
                                            media_type=pending.content_type))
 
@@ -212,7 +237,8 @@ class Relay:
             return JSONResponse({"error": "Command not supported by outbound channel"}, status_code=404)
         peer = self.peer
         if not peer or not self.online():
-            return JSONResponse({"error": "Device outbound channel is offline"}, status_code=503)
+            return JSONResponse({"error": "Device outbound channel is offline",
+                                 "error_code": "device_offline"}, status_code=503)
         booth_write = request.method == "POST" and path == "/booth"
         busy_at_arrival = bool(self.admitted or peer.pending)
         if self.booth_reservation or (not booth_write and busy_at_arrival):
@@ -263,7 +289,10 @@ class Relay:
         except (ValueError, UnicodeError):
             return JSONResponse({"error": "Invalid request body"}, status_code=400)
         except ChannelError as exc:
-            return JSONResponse({"error": exc.message}, status_code=exc.status)
+            error = {"error": exc.message}
+            if exc.code:
+                error["error_code"] = exc.code
+            return JSONResponse(error, status_code=exc.status)
         finally:
             if owns_admission:
                 self.admitted = None
@@ -310,10 +339,12 @@ class Relay:
                 return await pending.future
         except TimeoutError as exc:
             await self.disconnect(peer, "Command timed out")
-            raise ChannelError(504, "Command timed out; completion unknown, not retried") from exc
+            raise ChannelError(504, "Command timed out; completion unknown, not retried",
+                               "command_timeout") from exc
         except (OSError, WebSocketDisconnect, RuntimeError) as exc:
             await self.disconnect(peer, "Channel write failed")
-            raise ChannelError(503, "Channel write failed; completion unknown, not retried") from exc
+            raise ChannelError(503, "Channel write failed; completion unknown, not retried",
+                               "channel_write_failed") from exc
         except asyncio.CancelledError:
             await self.disconnect(peer, "Command caller cancelled")
             raise

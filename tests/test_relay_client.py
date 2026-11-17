@@ -172,6 +172,45 @@ def test_relay_binary_snapshot(config, relay_http):
     assert len(calls) == 1
 
 
+def test_relay_see_captures_once_without_hidden_warmup(config, relay_http):
+    image = b"\xff\xd8" + b"x" * 7743 + b"\xff\xd9"
+    calls = relay_http(lambda *_args: response(content=image))
+    result = registered_tools(config)["stackchan_see"]()
+    assert result[0] == {"data": image, "format": "jpeg"}
+    assert len(calls) == 1
+    assert calls[0][1].endswith("/snapshot?preview=1")
+
+
+@pytest.mark.parametrize("body,detail", [
+    ({"error_code": "reply_wrong_content_type"}, "content type did not match"),
+    ({"error_code": "binary_reply_interrupted"}, "before it arrived"),
+    ({"error": "response allocation failed"}, "could not allocate"),
+    ({"error": "capture failed"}, "camera capture or camera-bus recovery failed"),
+])
+def test_relay_see_preserves_first_safe_failure_without_second_capture(config, relay_http, body, detail):
+    calls = relay_http(lambda *_args: response(body, status=503))
+    result = registered_tools(config)["stackchan_see"]()
+    assert "Relay HTTP 503" in result
+    assert detail in result
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("body", [
+    {"error": "private-response-content"},
+    {"error_code": "private-response-content", "error": "private-response-content"},
+    {"error_code": ["private-response-content"], "error": {"secret": "private-response-content"}},
+    {"error_code": "reply_invalid_status", "error": "private-response-content"},
+    {"error": "private-response-content" * 1000},
+    ["private-response-content"],
+])
+def test_relay_diagnostics_never_echo_unknown_response_content(config, relay_http, body):
+    calls = relay_http(lambda *_args: response(body, status=503))
+    result = registered_tools(config)["stackchan_see"]()
+    assert "503" in result
+    assert "private-response-content" not in result
+    assert len(calls) == 1
+
+
 def test_relay_status_and_health_never_probe_device(config, relay_http):
     calls = relay_http(lambda *_args: response({"online": True, "busy": True, "last_seen_age": 1.5}))
     tools = registered_tools(config)

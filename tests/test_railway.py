@@ -1,6 +1,7 @@
 """Exercise the cloud entrypoint against a simulated body, never real hardware."""
 
 import asyncio
+import base64
 import json
 import os
 import shutil
@@ -139,6 +140,48 @@ def test_mcp_to_public_websocket_and_device_reconnect(cloud_config):
                     result = await asyncio.wait_for(pending, timeout=3)
                     assert "Face: happy" in result.content[0].text
                     assert not result.isError
+    with running_cloud(cloud_config) as base:
+        asyncio.run(exercise(base))
+
+
+def test_mcp_camera_image_and_first_failure_survive_public_websocket(cloud_config):
+    async def exercise(base):
+        async with (
+            streamablehttp_client(base + "/mcp", headers=AUTH) as (read, write, _),
+            ClientSession(read, write) as session,
+        ):
+            await session.initialize()
+            with connect(base.replace("http:", "ws:") + "/stackchan/ws",
+                         additional_headers={"Authorization": f"Bearer {DEVICE_TOKEN}"}) as ws:
+                ws.send(json.dumps({"type": "hello", "v": 1}))
+                assert ws.ping().wait(timeout=2)
+                # Same byte count as the real device's captured JPEG. Synthetic
+                # bytes exercise binary transport/MCP serialization, not a codec.
+                jpeg = b"\xff\xd8" + bytes(i % 256 for i in range(7743)) + b"\xff\xd9"
+                for valid in (True, False):
+                    pending = asyncio.create_task(session.call_tool("stackchan_see", {}))
+                    command = json.loads(await asyncio.to_thread(ws.recv, timeout=3))
+                    assert command["path"] == "/snapshot"
+                    assert command["query"] == {"preview": "1"}
+                    ws.send(json.dumps({"id": command["id"], "status": 200,
+                                        "binary_size": len(jpeg),
+                                        "content_type": "image/jpeg" if valid else "private-metadata"}))
+                    if valid:
+                        ws.send(b"SCB1" + command["id"].encode() + jpeg)
+                    # A hidden warmup/second capture would wait for another reply
+                    # and fail this deadline instead of returning this first result.
+                    result = await asyncio.wait_for(pending, timeout=3)
+                    if valid:
+                        image = result.content[0]
+                        assert image.type == "image"
+                        assert image.mimeType == "image/jpeg"
+                        assert base64.b64decode(image.data) == jpeg
+                        assert "Photo captured (7747 bytes)" in result.content[1].text
+                    else:
+                        message = result.content[0].text
+                        assert "Relay HTTP 503" in message
+                        assert "content type did not match" in message
+                        assert "private-metadata" not in message
     with running_cloud(cloud_config) as base:
         asyncio.run(exercise(base))
 

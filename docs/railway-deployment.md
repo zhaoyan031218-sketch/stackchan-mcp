@@ -104,7 +104,13 @@ docker run --rm -p 127.0.0.1:8080:8080 \
 ```
 
 测试启动真实 MCP 服务，并使用模拟 WebSocket 设备验证指令往返、重连、
-认证隔离及 SIGTERM 退出。不会访问实机或付费语音 API。
+认证隔离及 SIGTERM 退出，也验证图片能作为 MCP 图片内容完整返回。
+不会访问实机或付费语音 API。
+
+`stackchan_see` 在 relay 模式中每次只发送一条拍照请求。若失败，保留工具返回的
+完整错误；Railway 日志中的 `Device channel interrupted` 会记录失败阶段和
+固定错误码，不记录图片或密钥。串口显示 `Captured JPEG` 仅说明设备已生成图片，
+仍需验证回传，参见 [相机 503 排查](camera-relay-troubleshooting-2026-11-17.md)。
 
 云端入口将同步工具调用放到线程池并串行执行，保证同一事件循环中的设备心跳、
 私有 HTTP 控制接口和健康检查继续响应。两个监听器共享同一个中继状态；任一

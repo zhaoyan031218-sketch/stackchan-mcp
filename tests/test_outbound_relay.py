@@ -234,7 +234,48 @@ def test_bad_binary_reply_disconnects(client):
             ws.send_json({"id": command["id"], "status": 200,
                           "binary_size": 10, "content_type": "image/jpeg"})
             ws.send_bytes(b"SCB1" + command["id"].encode() + b"short")
-            assert response.result(timeout=2).status_code == 503
+            result = response.result(timeout=2)
+            assert result.status_code == 503
+            assert result.json()["error_code"] == "reply_binary_length_mismatch"
+
+
+@pytest.mark.parametrize("failure,expected", [
+    ("invalid_json", "reply_invalid_json"),
+    ("content_type", "reply_wrong_content_type"),
+    ("size", "reply_invalid_binary_size"),
+    ("header", "reply_invalid_binary_frame"),
+    ("missing_metadata", "reply_missing_binary_metadata"),
+    ("disconnected", "device_disconnected"),
+    ("binary_interrupted", "binary_reply_interrupted"),
+])
+def test_camera_failure_reports_safe_stage_without_image_or_token(client, caplog, failure, expected):
+    with client.websocket_connect("/stackchan/ws", headers=DEVICE_HEADERS) as ws:
+        ready(client, ws)
+        with ThreadPoolExecutor() as pool:
+            future = pool.submit(client.get, "/device/snapshot", headers=HEADERS)
+            command = ws.receive_json()
+            if failure == "invalid_json":
+                ws.send_text("private-image-or-metadata not JSON")
+            elif failure in {"content_type", "size", "binary_interrupted"}:
+                ws.send_json({"id": command["id"], "status": 200,
+                              "binary_size": MAX_BINARY + 1 if failure == "size" else 7747,
+                              "content_type": "private-image-or-metadata" if failure == "content_type" else "image/jpeg"})
+                if failure == "binary_interrupted":
+                    ws.close()
+            elif failure == "header":
+                ws.send_bytes(b"private-image-or-metadata" * 3)
+            elif failure == "missing_metadata":
+                ws.send_bytes(b"SCB1" + command["id"].encode() + b"private-image-or-metadata")
+            else:
+                ws.close()
+            result = future.result(timeout=2)
+            assert result.status_code == 503
+            assert result.json()["error_code"] == expected
+            assert "path=/snapshot" in caplog.text
+            stage = "awaiting_binary" if failure == "binary_interrupted" else "awaiting_reply"
+            assert f"stage={stage}" in caplog.text
+            for secret in ("private-image-or-metadata", DEVICE, CONTROL):
+                assert secret not in result.text + caplog.text
 
 
 def test_missing_heartbeat_closes_channel():

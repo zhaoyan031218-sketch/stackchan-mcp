@@ -17,6 +17,11 @@ push-based Stack-chan voice avatar in this repository.
 - `mcp_server/railway.py`: single-replica cloud entrypoint exposing authenticated
   MCP and device WebSockets, with relay control APIs on loopback only. See
   [Railway deployment](railway-deployment.md) for container setup and validation.
+- Relay `stackchan_see` sends one snapshot request with preview enabled; firmware
+  already flushes a stale camera frame. It never hides a failed remote warmup
+  behind a second capture. Relay reply failures expose fixed diagnostic codes
+  and safe descriptions, not arbitrary response text or image data. See
+  [camera relay diagnostics](camera-relay-troubleshooting-2026-11-17.md).
 - `scripts/configure_robot.py`: Windows provisioning helper that verifies the
   server TLS chain and creates a private firmware config without overwriting
   existing settings. See [Windows robot setup](windows-robot-setup.md).

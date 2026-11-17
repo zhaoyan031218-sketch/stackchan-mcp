@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import requests
 
+from .relay_errors import DEVICE_ERRORS, RELAY_ERRORS
 from .stackchan_config import (
     PCM_CONTENT_TYPE,
     PCM_SAMPLE_RATE,
@@ -161,6 +162,19 @@ class StackchanClient:
             )
         if 300 <= response.status_code < 400:
             raise requests.HTTPError("Relay redirects are not allowed", response=response)
+        if response.status_code >= 400 and len(response.content) <= 8192:
+            try:
+                error = response.json()
+            except ValueError:
+                error = None
+            if isinstance(error, dict):
+                code, message = error.get("error_code"), error.get("error")
+                detail = RELAY_ERRORS.get(code) if isinstance(code, str) else None
+                if detail is None and isinstance(message, str):
+                    detail = DEVICE_ERRORS.get(message)
+                if detail:
+                    raise requests.HTTPError(f"Relay HTTP {response.status_code}: {detail}",
+                                             response=response)
         response.raise_for_status()
         return response
 
@@ -412,6 +426,10 @@ class StackchanClient:
         return None, 0
 
     def snapshot(self) -> tuple[bytes | None, int]:
+        if self.config.transport == "relay":
+            # Firmware already discards a stale frame before capturing. A second
+            # remote request hides the first failure and can hit a reconnect gap.
+            return self.snapshot_once(preview=True)
         with suppress(Exception):
             self.snapshot_once(
                 preview=False,
