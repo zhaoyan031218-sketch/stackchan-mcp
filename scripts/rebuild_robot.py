@@ -10,6 +10,18 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 TARGET = "m5stack-cores3-railway"
+# Core 6.1.18 has no read timeout by default. Apply a bounded wait to every
+# build/upload download, without editing the installed Core or TLS settings.
+PLATFORMIO_LAUNCHER = (
+    "from platformio import http; "
+    "http.__default_requests_timeout__ = (10, 30); "
+    "from platformio.__main__ import main; "
+    "raise SystemExit(main())"
+)
+
+
+def platformio_command(python: Path, *arguments: str) -> list[str]:
+    return [str(python), "-c", PLATFORMIO_LAUNCHER, *arguments]
 
 
 def run(command: list[str], root: Path, env: dict[str, str]) -> None:
@@ -48,7 +60,8 @@ def prepare_tools(root: Path, env: dict[str, str]) -> Path:
 
 def build_and_upload(root: Path, python: Path, env: dict[str, str],
                      upload_port: str | None = None) -> Path:
-    command = [str(python), "-m", "platformio", "run", "-d", "firmware", "-e", TARGET]
+    command = platformio_command(python, "run", "-d", "firmware", "-e", TARGET)
+    print("PlatformIO downloads: connect timeout 10s; no-data read timeout 30s (not a total download limit).")
     # A failed build raises before upload, even if an old binary remains on disk.
     run(command, root, env)
     binary = root / f"firmware/.pio/build/{TARGET}/firmware.bin"
@@ -91,6 +104,7 @@ def main() -> int:
     env.update({
         "PLATFORMIO_CORE_DIR": str(ROOT / "work/platformio"),
         "PLATFORMIO_SETTING_ENABLE_TELEMETRY": "no",
+        "PIP_DISABLE_PIP_VERSION_CHECK": "1",
         "TEMP": str(temporary), "TMP": str(temporary),
     })
     try:
@@ -98,10 +112,10 @@ def main() -> int:
             prepare_config(ROOT, args.host, env)
         python = prepare_tools(ROOT, env)
         if args.list_ports:
-            run([str(python), "-m", "platformio", "device", "list"], ROOT, env)
+            run(platformio_command(python, "device", "list"), ROOT, env)
         elif args.monitor:
-            run([str(python), "-m", "platformio", "device", "monitor",
-                 "--port", args.port.upper(), "--baud", "115200"], ROOT, env)
+            run(platformio_command(python, "device", "monitor",
+                                   "--port", args.port.upper(), "--baud", "115200"), ROOT, env)
         else:
             build_and_upload(ROOT, python, env, args.port.upper() if args.upload else None)
     except subprocess.CalledProcessError:

@@ -1,5 +1,7 @@
+import json
 import shutil
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -7,6 +9,27 @@ import pytest
 from scripts import rebuild_robot
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+@pytest.mark.parametrize("exit_code", [0, 7])
+def test_platformio_launcher_keeps_arguments_timeout_and_failure_status(tmp_path, exit_code):
+    package = tmp_path / "platformio"
+    package.mkdir()
+    (package / "__init__.py").write_text("")
+    (package / "http.py").write_text("__default_requests_timeout__ = (10, None)\n")
+    (package / "__main__.py").write_text(
+        "import json, sys\nfrom . import http\n"
+        "def main():\n"
+        "    print(json.dumps({'args': sys.argv[1:], 'timeout': http.__default_requests_timeout__}))\n"
+        f"    return {exit_code}\n"
+    )
+    arguments = ["run", "-d", "firmware", "-e", rebuild_robot.TARGET]
+    result = subprocess.run(  # noqa: S603 - fixed interpreter and launcher; isolated fake Core.
+        rebuild_robot.platformio_command(Path(sys.executable), *arguments),
+        cwd=tmp_path, check=False, capture_output=True, text=True,
+    )
+    assert result.returncode == exit_code
+    assert json.loads(result.stdout) == {"args": arguments, "timeout": [10, 30]}
 
 
 def test_build_failure_does_not_flash_stale_binary(tmp_path, monkeypatch):
