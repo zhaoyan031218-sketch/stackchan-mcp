@@ -30,6 +30,9 @@ Device request failed: Relay HTTP 503: Device outbound channel is offline
 
 需要 Python 3.11 或更新版本，先运行 `py --version` 确认。首次编译需要联网下载
 PlatformIO、编译器和固定版本依赖；下载失败要处理报错，不能继续烧录旧文件。
+若编译器下载持续为 0 字节或报 `10053`，参照
+[Windows 编译器下载恢复](docs/windows-toolchain-download-troubleshooting-2026-11-18.md)，
+可用已校验离线包本地安装，或使用带读取超时的 Core 安装助手，继续使用现有配置。
 
 ## 2. 配置并编译
 
